@@ -11,7 +11,7 @@
 #define GPS_LINE_B  0
 #define GPS_LINE_A  255
 
-MYMODCFG(net.dk22pac.rusjj.gps, GTA:SA GPS, 1.0, DK22Pac & RusJJ)
+MYMODCFG(net.dk22pac.rusjj.gps, GTA:SA GPS, 1.1, DK22Pac & RusJJ)
 NEEDGAME(com.rockstargames.gtasa)
 
 CVector2D g_vecUnderRadar(0.0, -1.05); // 0
@@ -30,8 +30,9 @@ float gpsDistance;
 CVector2D gpsDistanceTextPos;
 CRect emptyRect, radarRect;
 unsigned int gpsLineColor = RWRGBALONG(GPS_LINE_R, GPS_LINE_G, GPS_LINE_B, GPS_LINE_A);
-float lineWidth = 3.5f;
-float textOffset;
+float lineWidth = 3.5f, textOffset, textScale;
+CVector2D vecMenuMapScales;
+CVector2D vecTextOffset;
 
 // Config
 ConfigEntry* pCfgClosestMaxGPSDistance;
@@ -39,6 +40,8 @@ ConfigEntry* pCfgGPSLineColorRGB;
 ConfigEntry* pCfgGPSLineWidth;
 ConfigEntry* pCfgGPSDrawDistance;
 ConfigEntry* pCfgGPSDrawDistancePosition;
+ConfigEntry* pCfgGPSDrawDistanceTextScale;
+ConfigEntry* pCfgGPSDrawDistanceTextOffset;
 
 // Game Vars
 tRadarTrace* pRadarTrace;
@@ -48,6 +51,7 @@ ScriptHandle TargetBlip;
 int *ScreenX, *ScreenY;
 float* NearScreenZ;
 float* RecipNearClip;
+bool *m_UserPause, *m_CodePause;
 
 // Game Funcs
 CPlayerPed* (*FindPlayerPed)(int);
@@ -80,6 +84,20 @@ void (*AsciiToGxtChar)(const char* txt, unsigned short* ret);
 void (*RenderFontBuffer)(void);
 
 
+inline bool IsGamePaused() { return *m_CodePause || *m_UserPause; };
+inline bool IsRGBValue(int value) { return value >= 0 && value <= 255; }
+void InitializeConfigValues()
+{
+    textOffset = (8.0f * (float)*ScreenY) / 448.0f;
+    textScale = (0.4f * ((float)*ScreenX) / 640.0f) * pCfgGPSDrawDistanceTextScale->GetFloat();
+    vecMenuMapScales.x = 0.001f * *ScreenX; // 1000F
+    vecMenuMapScales.y = 0.00223214285f * *ScreenY; // 448F
+
+    if(sscanf(pCfgGPSDrawDistanceTextOffset->GetString(), "%f %f", &vecTextOffset.x, &vecTextOffset.y) != 2)
+    {
+        vecTextOffset.x = vecTextOffset.y = 0;
+    }
+}
 
 void Setup2DVertex(RwOpenGLVertex &vertex, float x, float y)
 {
@@ -96,13 +114,13 @@ unsigned short* textGxt = new unsigned short[0xFF];
 DECL_HOOK(void, PreRenderEnd, void* self)
 {
     PreRenderEnd(self);
-    if(gpsDistance > 0.0f && pCfgGPSDrawDistance->GetBool())
+    if(gpsDistance > 0.0f && !IsGamePaused() && pCfgGPSDrawDistance->GetBool())
     {
         FontSetOrientation(g_nTextAlignment);
         FontSetColor((CRGBA*)&rgbaWhite);
         FontSetBackground(false, false);
         FontSetWrapx(500.0f);
-        FontSetScale(0.5f * (*ScreenX) / 640.0f);
+        FontSetScale(textScale);
         FontSetStyle(FONT_SUBTITLES);
         FontSetProportional(true);
         FontSetDropShadowPosition(1);
@@ -119,13 +137,15 @@ DECL_HOOK(void, PreRenderEnd, void* self)
     }
 }
 
-static CVector destPosn;
+DECL_HOOKv(InitRenderWare)
+{
+    InitRenderWare();
+    InitializeConfigValues();
+}
+
 DECL_HOOKv(PostRadarDraw, bool b)
 {
     PostRadarDraw(b);
-
-    // Do not render in main menu (temporarily)
-    if(gMobileMenu->m_bDrawRadarOrMap) return;
 
     CPlayerPed* player;
     if(gMobileMenu->m_TargetBlipHandle.m_nHandleIndex &&
@@ -136,10 +156,10 @@ DECL_HOOKv(PostRadarDraw, bool b)
        player->m_pVehicle->m_nVehicleSubType != VEHICLE_TYPE_HELI &&
        player->m_pVehicle->m_nVehicleSubType != VEHICLE_TYPE_BMX)
     {
-        if(TargetBlip.m_nHandleIndex != gMobileMenu->m_TargetBlipHandle.m_nHandleIndex)
+        bool isGamePaused = IsGamePaused();
+        if(TargetBlip.m_nHandleIndex != gMobileMenu->m_TargetBlipHandle.m_nHandleIndex && !isGamePaused)
         {
             TargetBlip = gMobileMenu->m_TargetBlipHandle;
-            destPosn = pRadarTrace[TargetBlip.m_nId].m_vecWorldPosition;
 
             CVector2D posn;
             TransformRadarPointToScreenSpace(posn, CVector2D(-1.0f, -1.0f));
@@ -154,31 +174,35 @@ DECL_HOOKv(PostRadarDraw, bool b)
                 case 0: // Under
                     g_nTextAlignment = ALIGN_CENTER;
                     TransformRadarPointToScreenSpace(gpsDistanceTextPos, g_vecUnderRadar);
+                    gpsDistanceTextPos += vecTextOffset;
                     gpsDistanceTextPos.y += textOffset;
                     break;
 
                 case 1: // Above
                     g_nTextAlignment = ALIGN_CENTER;
                     TransformRadarPointToScreenSpace(gpsDistanceTextPos, g_vecAboveRadar);
+                    gpsDistanceTextPos += vecTextOffset;
                     gpsDistanceTextPos.y -= textOffset;
                     break;
 
                 case 2: // Left
                     g_nTextAlignment = ALIGN_RIGHT;
                     TransformRadarPointToScreenSpace(gpsDistanceTextPos, g_vecLeftRadar);
+                    gpsDistanceTextPos += vecTextOffset;
                     gpsDistanceTextPos.x -= textOffset;
                     break;
 
                 case 3: // Right
                     g_nTextAlignment = ALIGN_LEFT;
                     TransformRadarPointToScreenSpace(gpsDistanceTextPos, g_vecRightRadar);
+                    gpsDistanceTextPos += vecTextOffset;
                     gpsDistanceTextPos.x += textOffset;
                     break;
             }
         }
 
         short nodesCount = 0;
-        DoPathSearch((uintptr_t)ThePaths, player->m_pVehicle->m_nVehicleSubType == VEHICLE_TYPE_BOAT, player->GetPosition(), CNodeAddress(), destPosn, resultNodes, &nodesCount, MAX_NODE_POINTS, &gpsDistance, 99999.0f, NULL, 99999.0f, false, CNodeAddress(), false, player->m_pVehicle->m_nVehicleSubType == VEHICLE_TYPE_BOAT);
+        DoPathSearch((uintptr_t)ThePaths, player->m_pVehicle->m_nVehicleSubType == VEHICLE_TYPE_BOAT, player->GetPosition(), CNodeAddress(), pRadarTrace[gMobileMenu->m_TargetBlipHandle.m_nId].m_vecWorldPosition, resultNodes, &nodesCount, MAX_NODE_POINTS, &gpsDistance, 99999.0f, NULL, 99999.0f, false, CNodeAddress(), false, player->m_pVehicle->m_nVehicleSubType == VEHICLE_TYPE_BOAT);
 
         if(nodesCount > 0)
         {
@@ -194,7 +218,7 @@ DECL_HOOKv(PostRadarDraw, bool b)
                 CPathNode* node = (CPathNode*)(ThePaths[513 + resultNodes[i].m_nAreaId] + 28 * resultNodes[i].m_nNodeId);
                 CVector nodePosn = node->GetPosition();
                 TransformRealWorldPointToRadarSpace(tmpPoint, nodePosn.m_vec2D);
-                if (!gMobileMenu->m_bDrawRadarOrMap)
+                if (!isGamePaused)
                 {
                     TransformRadarPointToScreenSpace(nodePoints[i], tmpPoint);
                 }
@@ -202,13 +226,13 @@ DECL_HOOKv(PostRadarDraw, bool b)
                 {
                     LimitRadarPoint(tmpPoint);
                     TransformRadarPointToScreenSpace(nodePoints[i], tmpPoint);
-                    nodePoints[i].x *= *ScreenX / 640.0f;
-                    nodePoints[i].y *= *ScreenY / 448.0f;
-                    LimitToMap(&nodePoints[i].x, &nodePoints[i].y);
+                    nodePoints[i].x *= vecMenuMapScales.x;
+                    nodePoints[i].y *= vecMenuMapScales.y;
+                    //LimitToMap(&nodePoints[i].x, &nodePoints[i].y);
                 }
             }
 
-            SetScissorRect(radarRect);
+            if (!isGamePaused || !gMobileMenu->m_bDrawMenuMap) SetScissorRect(radarRect); // Scissor
             RwRenderStateSet(rwRENDERSTATETEXTURERASTER, NULL);
 
             unsigned int vertIndex = 0;
@@ -218,7 +242,7 @@ DECL_HOOKv(PostRadarDraw, bool b)
                 CVector2D point[4], shift[2];
                 CVector2D dir = CVector2D::Diff(nodePoints[i + 1], nodePoints[i]);
                 float angle = atan2(dir.y, dir.x);
-                if (!gMobileMenu->m_bDrawRadarOrMap)
+                if (!isGamePaused)
                 {
                     shift[0].x = cosf(angle - 1.5707963f) * lineWidth;
                     shift[0].y = sinf(angle - 1.5707963f) * lineWidth;
@@ -244,7 +268,7 @@ DECL_HOOKv(PostRadarDraw, bool b)
                 ++vertIndex;
             }
             RwIm2DRenderPrimitive(rwPRIMTYPETRISTRIP, lineVerts, 4 * nodesCount);
-            SetScissorRect(emptyRect);
+            if (!isGamePaused || !gMobileMenu->m_bDrawMenuMap) SetScissorRect(emptyRect); // Scissor
         }
     }
     else
@@ -252,11 +276,6 @@ DECL_HOOKv(PostRadarDraw, bool b)
         TargetBlip.m_nHandleIndex = 0;
         gpsDistance = 0;
     }
-}
-
-inline bool IsRGBValue(int value)
-{
-    return value >= 0 && value <= 255;
 }
 
 extern "C" void OnModLoad()
@@ -270,6 +289,8 @@ extern "C" void OnModLoad()
     pCfgGPSLineWidth = cfg->Bind("GPSLineWidth", 4.0f); lineWidth = pCfgGPSLineWidth->GetFloat();
     pCfgGPSDrawDistance = cfg->Bind("GPSDrawDistance", true);
     pCfgGPSDrawDistancePosition = cfg->Bind("GPSDrawDistancePos", 0); // 0 under, 1 above, 2 left, 3 right
+    pCfgGPSDrawDistanceTextScale = cfg->Bind("GPSDrawDistanceTextScale", 1.0f);
+    pCfgGPSDrawDistanceTextOffset = cfg->Bind("GPSDrawDistanceTextOffset", "0.0 0.0");
 
     int r, g, b, a;
     if(sscanf(pCfgGPSLineColorRGB->GetString(), "%d %d %d %d", &r, &g, &b, &a) == 4 &&
@@ -319,9 +340,10 @@ extern "C" void OnModLoad()
     SET_TO(FontPrintString, aml->GetSym(hGTASA, "_ZN5CFont11PrintStringEffPt"));
     SET_TO(AsciiToGxtChar, aml->GetSym(hGTASA, "_Z14AsciiToGxtCharPKcPt"));
     SET_TO(RenderFontBuffer, aml->GetSym(hGTASA, "_ZN5CFont16RenderFontBufferEv"));
+    SET_TO(m_UserPause, aml->GetSym(hGTASA, "_ZN6CTimer11m_UserPauseE"));
+    SET_TO(m_CodePause, aml->GetSym(hGTASA, "_ZN6CTimer11m_CodePauseE"));
 
     HOOKPLT(PreRenderEnd, pGTASA + 0x674188);
+    HOOKPLT(InitRenderWare, pGTASA + 0x66F2D0);
     HOOK(PostRadarDraw, aml->GetSym(hGTASA, "_ZN6CRadar20DrawRadarGangOverlayEb"));
-
-    textOffset = 8.0f * *ScreenY / 448.0f;
 }
