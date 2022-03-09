@@ -6,10 +6,10 @@
 #include <GTASA_STRUCTS.h>
 
 #define MAX_NODE_POINTS 2000
-#define GPS_LINE_R  235
-#define GPS_LINE_G  212
-#define GPS_LINE_B  0
-#define GPS_LINE_A  255
+#define GPS_LINE_R      235
+#define GPS_LINE_G      212
+#define GPS_LINE_B      0
+#define GPS_LINE_A      255
 
 MYMODCFG(net.dk22pac.rusjj.gps, GTA:SA GPS, 1.1, DK22Pac & RusJJ)
 NEEDGAME(com.rockstargames.gtasa)
@@ -44,11 +44,11 @@ ConfigEntry* pCfgGPSDrawDistanceTextScale;
 ConfigEntry* pCfgGPSDrawDistanceTextOffset;
 
 // Game Vars
+RsGlobalType* RsGlobal;
 tRadarTrace* pRadarTrace;
 MobileMenu* gMobileMenu;
 int* ThePaths;
 ScriptHandle TargetBlip;
-int *ScreenX, *ScreenY;
 float* NearScreenZ;
 float* RecipNearClip;
 bool *m_UserPause, *m_CodePause;
@@ -88,10 +88,10 @@ inline bool IsGamePaused() { return *m_CodePause || *m_UserPause; };
 inline bool IsRGBValue(int value) { return value >= 0 && value <= 255; }
 void InitializeConfigValues()
 {
-    textOffset = (8.0f * (float)*ScreenY) / 448.0f;
-    textScale = (0.4f * ((float)*ScreenX) / 640.0f) * pCfgGPSDrawDistanceTextScale->GetFloat();
-    vecMenuMapScales.x = 0.001f * *ScreenX; // 1000F
-    vecMenuMapScales.y = 0.00223214285f * *ScreenY; // 448F
+    textOffset = (8.0f * (float)RsGlobal->maximumHeight) / 448.0f;
+    textScale = (0.4f * ((float)RsGlobal->maximumWidth) / 640.0f) * pCfgGPSDrawDistanceTextScale->GetFloat();
+    vecMenuMapScales.x = 0.001f * RsGlobal->maximumWidth; // 1000F
+    vecMenuMapScales.y = 0.00223214285f * RsGlobal->maximumHeight; // 448F
 
     if(sscanf(pCfgGPSDrawDistanceTextOffset->GetString(), "%f %f", &vecTextOffset.x, &vecTextOffset.y) != 2)
     {
@@ -116,6 +116,11 @@ DECL_HOOK(void, PreRenderEnd, void* self)
     PreRenderEnd(self);
     if(gpsDistance > 0.0f && !IsGamePaused() && pCfgGPSDrawDistance->GetBool())
     {
+        if(gpsDistance == 100000.0f) sprintf(text, "Far from the road!");
+        else if (gpsDistance >= 1000.0f) sprintf(text, "%.2fkm", 0.001f * gpsDistance);
+        else sprintf(text, "%.0fm", gpsDistance);
+        AsciiToGxtChar(text, textGxt);
+
         FontSetOrientation(g_nTextAlignment);
         FontSetColor((CRGBA*)&rgbaWhite);
         FontSetBackground(false, false);
@@ -124,14 +129,6 @@ DECL_HOOK(void, PreRenderEnd, void* self)
         FontSetStyle(FONT_SUBTITLES);
         FontSetProportional(true);
         FontSetDropShadowPosition(1);
-        //FontSetDropColor(CRGBA(0, 0, 0, 255));
-        if(gpsDistance == 100000.0f)
-            sprintf(text, "Far from the road!");
-        else if (gpsDistance >= 1000.0f)
-            sprintf(text, "%.2fkm", 0.001f * gpsDistance);
-        else
-            sprintf(text, "%dm", static_cast<int>(gpsDistance));
-        AsciiToGxtChar(text, textGxt);
         FontPrintString(gpsDistanceTextPos.x, gpsDistanceTextPos.y, textGxt);
         RenderFontBuffer();
     }
@@ -292,11 +289,14 @@ extern "C" void OnModLoad()
     pCfgGPSDrawDistanceTextScale = cfg->Bind("GPSDrawDistanceTextScale", 1.0f);
     pCfgGPSDrawDistanceTextOffset = cfg->Bind("GPSDrawDistanceTextOffset", "0.0 0.0");
 
-    int r, g, b, a;
-    if(sscanf(pCfgGPSLineColorRGB->GetString(), "%d %d %d %d", &r, &g, &b, &a) == 4 &&
-       IsRGBValue(r) && IsRGBValue(g) && IsRGBValue(b) && IsRGBValue(a))
+    int r, g, b, a, sscanfed = sscanf(pCfgGPSLineColorRGB->GetString(), "%d %d %d %d", &r, &g, &b, &a);
+    if(sscanfed == 4 && IsRGBValue(r) && IsRGBValue(g) && IsRGBValue(b) && IsRGBValue(a))
     {
         gpsLineColor = RWRGBALONG(r, g, b, a);
+    }
+    else if(sscanfed == 3 && IsRGBValue(r) && IsRGBValue(g) && IsRGBValue(b))
+    {
+        gpsLineColor = RWRGBALONG(r, g, b, 255);
     }
     else
     {
@@ -304,46 +304,44 @@ extern "C" void OnModLoad()
         cfg->Save();
     }
 
-    SET_TO(ThePaths, aml->GetSym(hGTASA, "ThePaths"));
-    SET_TO(FindPlayerPed, aml->GetSym(hGTASA, "_Z13FindPlayerPedi"));
-    SET_TO(FindPlayerCoors, aml->GetSym(hGTASA, "_Z15FindPlayerCoorsi"));
-    SET_TO(FindGroundZForCoord, aml->GetSym(hGTASA, "_ZN6CWorld19FindGroundZForCoordEff"));
-    SET_TO(DoPathSearch, aml->GetSym(hGTASA, "_ZN9CPathFind12DoPathSearchEh7CVector12CNodeAddressS0_PS1_PsiPffS2_fbS1_bb"));
+    SET_TO(ThePaths,                            aml->GetSym(hGTASA, "ThePaths"));
+    SET_TO(gMobileMenu,                         aml->GetSym(hGTASA, "gMobileMenu"));
+    SET_TO(RsGlobal,                            aml->GetSym(hGTASA, "RsGlobal"));
+    SET_TO(NearScreenZ,                         aml->GetSym(hGTASA, "_ZN9CSprite2d11NearScreenZE"));
+    SET_TO(RecipNearClip,                       aml->GetSym(hGTASA, "_ZN9CSprite2d13RecipNearClipE"));
+    SET_TO(pRadarTrace,                         aml->GetSym(hGTASA, "_ZN6CRadar13ms_RadarTraceE"));
+    SET_TO(m_UserPause,                         aml->GetSym(hGTASA, "_ZN6CTimer11m_UserPauseE"));
+    SET_TO(m_CodePause,                         aml->GetSym(hGTASA, "_ZN6CTimer11m_CodePauseE"));
+
+    SET_TO(FindPlayerPed,                       aml->GetSym(hGTASA, "_Z13FindPlayerPedi"));
+    SET_TO(FindPlayerCoors,                     aml->GetSym(hGTASA, "_Z15FindPlayerCoorsi"));
+    SET_TO(FindGroundZForCoord,                 aml->GetSym(hGTASA, "_ZN6CWorld19FindGroundZForCoordEff"));
+    SET_TO(DoPathSearch,                        aml->GetSym(hGTASA, "_ZN9CPathFind12DoPathSearchEh7CVector12CNodeAddressS0_PS1_PsiPffS2_fbS1_bb"));
     SET_TO(TransformRadarPointToRealWorldSpace, aml->GetSym(hGTASA, "_ZN6CRadar35TransformRadarPointToRealWorldSpaceER9CVector2DRKS0_"));
     SET_TO(TransformRealWorldPointToRadarSpace, aml->GetSym(hGTASA, "_ZN6CRadar35TransformRealWorldPointToRadarSpaceER9CVector2DRKS0_"));
-    SET_TO(TransformRadarPointToScreenSpace, aml->GetSym(hGTASA, "_ZN6CRadar32TransformRadarPointToScreenSpaceER9CVector2DRKS0_"));
-    SET_TO(LimitRadarPoint, aml->GetSym(hGTASA, "_ZN6CRadar15LimitRadarPointER9CVector2D"));
-    SET_TO(LimitToMap, aml->GetSym(hGTASA, "_ZN6CRadar10LimitToMapEPfS0_"));
-    SET_TO(NearScreenZ, aml->GetSym(hGTASA, "_ZN9CSprite2d11NearScreenZE"));
-    SET_TO(RecipNearClip, aml->GetSym(hGTASA, "_ZN9CSprite2d13RecipNearClipE"));
-    SET_TO(pRadarTrace, aml->GetSym(hGTASA, "_ZN6CRadar13ms_RadarTraceE"));
-    SET_TO(gMobileMenu, aml->GetSym(hGTASA, "gMobileMenu"));
-    SET_TO(FindNodeCoorsForScript, aml->GetSym(hGTASA, "_ZN9CPathFind22FindNodeCoorsForScriptE12CNodeAddressPb"));
-    SET_TO(RwRenderStateSet, aml->GetSym(hGTASA, "_Z16RwRenderStateSet13RwRenderStatePv"));
-    SET_TO(RwIm2DRenderPrimitive, aml->GetSym(hGTASA, "_Z28RwIm2DRenderPrimitive_BUGFIX15RwPrimitiveTypeP14RwOpenGLVertexi"));
-    SET_TO(SetScissorRect, aml->GetSym(hGTASA, "_ZN7CWidget10SetScissorER5CRect"));
-    SET_TO(ClearRadarBlip, aml->GetSym(hGTASA, "_ZN6CRadar9ClearBlipEi"));
-    
-    ScreenX = (int*)(pGTASA + 0x6855B4);
-    ScreenY = (int*)(pGTASA + 0x6855B8);
+    SET_TO(TransformRadarPointToScreenSpace,    aml->GetSym(hGTASA, "_ZN6CRadar32TransformRadarPointToScreenSpaceER9CVector2DRKS0_"));
+    SET_TO(LimitRadarPoint,                     aml->GetSym(hGTASA, "_ZN6CRadar15LimitRadarPointER9CVector2D"));
+    SET_TO(LimitToMap,                          aml->GetSym(hGTASA, "_ZN6CRadar10LimitToMapEPfS0_"));
+    SET_TO(FindNodeCoorsForScript,              aml->GetSym(hGTASA, "_ZN9CPathFind22FindNodeCoorsForScriptE12CNodeAddressPb"));
+    SET_TO(RwRenderStateSet,                    aml->GetSym(hGTASA, "_Z16RwRenderStateSet13RwRenderStatePv"));
+    SET_TO(RwIm2DRenderPrimitive,               aml->GetSym(hGTASA, "_Z28RwIm2DRenderPrimitive_BUGFIX15RwPrimitiveTypeP14RwOpenGLVertexi"));
+    SET_TO(SetScissorRect,                      aml->GetSym(hGTASA, "_ZN7CWidget10SetScissorER5CRect"));
+    SET_TO(ClearRadarBlip,                      aml->GetSym(hGTASA, "_ZN6CRadar9ClearBlipEi"));
+    SET_TO(FontSetOrientation,                  aml->GetSym(hGTASA, "_ZN5CFont14SetOrientationEh"));
+    SET_TO(FontSetColor,                        aml->GetSym(hGTASA, "_ZN5CFont8SetColorE5CRGBA"));
+    SET_TO(FontSetBackground,                   aml->GetSym(hGTASA, "_ZN5CFont13SetBackgroundEhh"));
+    SET_TO(FontSetWrapx,                        aml->GetSym(hGTASA, "_ZN5CFont8SetWrapxEf"));
+    SET_TO(FontSetStyle,                        aml->GetSym(hGTASA, "_ZN5CFont12SetFontStyleEh"));
+    SET_TO(FontSetScale,                        aml->GetSym(hGTASA, "_ZN5CFont8SetScaleEf"));
+    SET_TO(FontSetEdge,                         aml->GetSym(hGTASA, "_ZN5CFont7SetEdgeEa"));
+    SET_TO(FontSetProportional,                 aml->GetSym(hGTASA, "_ZN5CFont15SetProportionalEh"));
+    SET_TO(FontSetDropShadowPosition,           aml->GetSym(hGTASA, "_ZN5CFont21SetDropShadowPositionEa"));
+    SET_TO(FontSetDropColor,                    aml->GetSym(hGTASA, "_ZN5CFont12SetDropColorE5CRGBA"));
+    SET_TO(FontPrintString,                     aml->GetSym(hGTASA, "_ZN5CFont11PrintStringEffPt"));
+    SET_TO(AsciiToGxtChar,                      aml->GetSym(hGTASA, "_Z14AsciiToGxtCharPKcPt"));
+    SET_TO(RenderFontBuffer,                    aml->GetSym(hGTASA, "_ZN5CFont16RenderFontBufferEv"));
 
-    SET_TO(FontSetOrientation, aml->GetSym(hGTASA, "_ZN5CFont14SetOrientationEh"));
-    SET_TO(FontSetColor, aml->GetSym(hGTASA, "_ZN5CFont8SetColorE5CRGBA"));
-    SET_TO(FontSetBackground, aml->GetSym(hGTASA, "_ZN5CFont13SetBackgroundEhh"));
-    SET_TO(FontSetWrapx, aml->GetSym(hGTASA, "_ZN5CFont8SetWrapxEf"));
-    SET_TO(FontSetStyle, aml->GetSym(hGTASA, "_ZN5CFont12SetFontStyleEh"));
-    SET_TO(FontSetScale, aml->GetSym(hGTASA, "_ZN5CFont8SetScaleEf"));
-    SET_TO(FontSetEdge, aml->GetSym(hGTASA, "_ZN5CFont7SetEdgeEa"));
-    SET_TO(FontSetProportional, aml->GetSym(hGTASA, "_ZN5CFont15SetProportionalEh"));
-    SET_TO(FontSetDropShadowPosition, aml->GetSym(hGTASA, "_ZN5CFont21SetDropShadowPositionEa"));
-    SET_TO(FontSetDropColor, aml->GetSym(hGTASA, "_ZN5CFont12SetDropColorE5CRGBA"));
-    SET_TO(FontPrintString, aml->GetSym(hGTASA, "_ZN5CFont11PrintStringEffPt"));
-    SET_TO(AsciiToGxtChar, aml->GetSym(hGTASA, "_Z14AsciiToGxtCharPKcPt"));
-    SET_TO(RenderFontBuffer, aml->GetSym(hGTASA, "_ZN5CFont16RenderFontBufferEv"));
-    SET_TO(m_UserPause, aml->GetSym(hGTASA, "_ZN6CTimer11m_UserPauseE"));
-    SET_TO(m_CodePause, aml->GetSym(hGTASA, "_ZN6CTimer11m_CodePauseE"));
-
-    HOOKPLT(PreRenderEnd, pGTASA + 0x674188);
+    HOOKPLT(PreRenderEnd,   pGTASA + 0x674188);
     HOOKPLT(InitRenderWare, pGTASA + 0x66F2D0);
-    HOOK(PostRadarDraw, aml->GetSym(hGTASA, "_ZN6CRadar20DrawRadarGangOverlayEb"));
+    HOOK(PostRadarDraw,     aml->GetSym(hGTASA, "_ZN6CRadar20DrawRadarGangOverlayEb"));
 }
