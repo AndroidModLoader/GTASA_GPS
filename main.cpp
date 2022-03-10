@@ -11,7 +11,7 @@
 #define GPS_LINE_B      0
 #define GPS_LINE_A      255
 
-MYMODCFG(net.dk22pac.rusjj.gps, GTA:SA GPS, 1.1, DK22Pac & RusJJ)
+MYMODCFG(net.dk22pac.rusjj.gps, GTA:SA GPS, 1.1.1, DK22Pac & RusJJ)
 NEEDGAME(com.rockstargames.gtasa)
 
 CVector2D g_vecUnderRadar(0.0, -1.05); // 0
@@ -90,7 +90,7 @@ void InitializeConfigValues()
 {
     textOffset = (8.0f * (float)RsGlobal->maximumHeight) / 448.0f;
     textScale = (0.4f * ((float)RsGlobal->maximumWidth) / 640.0f) * pCfgGPSDrawDistanceTextScale->GetFloat();
-    vecMenuMapScales.x = 0.001f * RsGlobal->maximumWidth; // 1000F
+    vecMenuMapScales.x = 2.41f;
     vecMenuMapScales.y = 0.00223214285f * RsGlobal->maximumHeight; // 448F
 
     if(sscanf(pCfgGPSDrawDistanceTextOffset->GetString(), "%f %f", &vecTextOffset.x, &vecTextOffset.y) != 2)
