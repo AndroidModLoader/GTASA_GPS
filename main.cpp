@@ -11,7 +11,7 @@
 #define GPS_LINE_B      0
 #define GPS_LINE_A      255
 
-MYMODCFG(net.dk22pac.rusjj.gps, GTA:SA GPS, 1.1.1, DK22Pac & RusJJ)
+MYMODCFG(net.dk22pac.rusjj.gps, GTA:SA GPS, 1.1.2, DK22Pac & RusJJ)
 NEEDGAME(com.rockstargames.gtasa)
 
 CVector2D g_vecUnderRadar(0.0, -1.05); // 0
@@ -30,8 +30,7 @@ float gpsDistance;
 CVector2D gpsDistanceTextPos;
 CRect emptyRect, radarRect;
 unsigned int gpsLineColor = RWRGBALONG(GPS_LINE_R, GPS_LINE_G, GPS_LINE_B, GPS_LINE_A);
-float lineWidth = 3.5f, textOffset, textScale;
-CVector2D vecMenuMapScales;
+float lineWidth = 3.5f, textOffset, textScale, flMenuMapScaling;
 CVector2D vecTextOffset;
 
 // Config
@@ -58,7 +57,6 @@ CPlayerPed* (*FindPlayerPed)(int);
 CVector& (*FindPlayerCoors)(CVector*, int);
 float (*FindGroundZForCoord)(float, float);
 int (*DoPathSearch)(uintptr_t, unsigned char, CVector, CNodeAddress, CVector, CNodeAddress*, short*, int, float*, float, CNodeAddress*, float, bool, CNodeAddress, bool, bool);
-CVector (*FindNodeCoorsForScript)(CNodeAddress, bool*);
 void (*TransformRadarPointToRealWorldSpace)(CVector2D& out, CVector2D const& in);
 void (*TransformRealWorldPointToRadarSpace)(CVector2D& out, CVector2D const& in);
 void (*TransformRadarPointToScreenSpace)(CVector2D& out, CVector2D const& in);
@@ -90,8 +88,7 @@ void InitializeConfigValues()
 {
     textOffset = (8.0f * (float)RsGlobal->maximumHeight) / 448.0f;
     textScale = (0.4f * ((float)RsGlobal->maximumWidth) / 640.0f) * pCfgGPSDrawDistanceTextScale->GetFloat();
-    vecMenuMapScales.x = 2.41f;
-    vecMenuMapScales.y = 0.00223214285f * RsGlobal->maximumHeight; // 448F
+    flMenuMapScaling = 0.00223214285f * RsGlobal->maximumHeight;
 
     if(sscanf(pCfgGPSDrawDistanceTextOffset->GetString(), "%f %f", &vecTextOffset.x, &vecTextOffset.y) != 2)
     {
@@ -118,7 +115,7 @@ DECL_HOOK(void, PreRenderEnd, void* self)
     {
         if(gpsDistance == 100000.0f) sprintf(text, "Far from the road!");
         else if (gpsDistance >= 1000.0f) sprintf(text, "%.2fkm", 0.001f * gpsDistance);
-        else sprintf(text, "%.0fm", gpsDistance);
+        else sprintf(text, "%dm", (int)gpsDistance);
         AsciiToGxtChar(text, textGxt);
 
         FontSetOrientation(g_nTextAlignment);
@@ -198,8 +195,14 @@ DECL_HOOKv(PostRadarDraw, bool b)
             }
         }
 
+        CVector& bpos = pRadarTrace[gMobileMenu->m_TargetBlipHandle.m_nId].m_vecWorldPosition;
+        if(bpos.z == 0)
+        {
+            bpos.z = FindGroundZForCoord(bpos.x, bpos.y) + 5.0f;
+        }
+
         short nodesCount = 0;
-        DoPathSearch((uintptr_t)ThePaths, player->m_pVehicle->m_nVehicleSubType == VEHICLE_TYPE_BOAT, player->GetPosition(), CNodeAddress(), pRadarTrace[gMobileMenu->m_TargetBlipHandle.m_nId].m_vecWorldPosition, resultNodes, &nodesCount, MAX_NODE_POINTS, &gpsDistance, 99999.0f, NULL, 99999.0f, false, CNodeAddress(), false, player->m_pVehicle->m_nVehicleSubType == VEHICLE_TYPE_BOAT);
+        DoPathSearch((uintptr_t)ThePaths, player->m_pVehicle->m_nVehicleSubType == VEHICLE_TYPE_BOAT, player->GetPosition(), CNodeAddress(), bpos, resultNodes, &nodesCount, MAX_NODE_POINTS, &gpsDistance, 1000000.0f, NULL, 1000000.0f, false, CNodeAddress(), false, player->m_pVehicle->m_nVehicleSubType == VEHICLE_TYPE_BOAT);
 
         if(nodesCount > 0)
         {
@@ -207,25 +210,24 @@ DECL_HOOKv(PostRadarDraw, bool b)
             {
                 ClearRadarBlip(TargetBlip.m_nHandleIndex);
                 gMobileMenu->m_TargetBlipHandle.m_nHandleIndex = 0;
+                TargetBlip.m_nHandleIndex = 0;
                 return;
             }
             for (short i = 0; i < nodesCount; ++i)
             {
-                CVector2D tmpPoint;
                 CPathNode* node = (CPathNode*)(ThePaths[513 + resultNodes[i].m_nAreaId] + 28 * resultNodes[i].m_nNodeId);
-                CVector nodePosn = node->GetPosition();
-                TransformRealWorldPointToRadarSpace(tmpPoint, nodePosn.m_vec2D);
+                CVector2D nodePos = node->GetPosition2D();
+                TransformRealWorldPointToRadarSpace(nodePos, nodePos);
                 if (!isGamePaused)
                 {
-                    TransformRadarPointToScreenSpace(nodePoints[i], tmpPoint);
+                    TransformRadarPointToScreenSpace(nodePoints[i], nodePos);
                 }
                 else
                 {
-                    LimitRadarPoint(tmpPoint);
-                    TransformRadarPointToScreenSpace(nodePoints[i], tmpPoint);
-                    nodePoints[i].x *= vecMenuMapScales.x;
-                    nodePoints[i].y *= vecMenuMapScales.y;
-                    //LimitToMap(&nodePoints[i].x, &nodePoints[i].y);
+                    LimitRadarPoint(nodePos);
+                    TransformRadarPointToScreenSpace(nodePoints[i], nodePos);
+                    nodePoints[i].x *= flMenuMapScaling;
+                    nodePoints[i].y *= flMenuMapScaling;
                 }
             }
 
@@ -321,8 +323,6 @@ extern "C" void OnModLoad()
     SET_TO(TransformRealWorldPointToRadarSpace, aml->GetSym(hGTASA, "_ZN6CRadar35TransformRealWorldPointToRadarSpaceER9CVector2DRKS0_"));
     SET_TO(TransformRadarPointToScreenSpace,    aml->GetSym(hGTASA, "_ZN6CRadar32TransformRadarPointToScreenSpaceER9CVector2DRKS0_"));
     SET_TO(LimitRadarPoint,                     aml->GetSym(hGTASA, "_ZN6CRadar15LimitRadarPointER9CVector2D"));
-    SET_TO(LimitToMap,                          aml->GetSym(hGTASA, "_ZN6CRadar10LimitToMapEPfS0_"));
-    SET_TO(FindNodeCoorsForScript,              aml->GetSym(hGTASA, "_ZN9CPathFind22FindNodeCoorsForScriptE12CNodeAddressPb"));
     SET_TO(RwRenderStateSet,                    aml->GetSym(hGTASA, "_Z16RwRenderStateSet13RwRenderStatePv"));
     SET_TO(RwIm2DRenderPrimitive,               aml->GetSym(hGTASA, "_Z28RwIm2DRenderPrimitive_BUGFIX15RwPrimitiveTypeP14RwOpenGLVertexi"));
     SET_TO(SetScissorRect,                      aml->GetSym(hGTASA, "_ZN7CWidget10SetScissorER5CRect"));
