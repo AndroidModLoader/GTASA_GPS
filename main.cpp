@@ -11,7 +11,7 @@
 #define GPS_LINE_B      0
 #define GPS_LINE_A      255
 
-MYMODCFG(net.dk22pac.rusjj.gps, GTA:SA GPS, 1.1.2, DK22Pac & RusJJ)
+MYMODCFG(net.dk22pac.rusjj.gps, GTA:SA GPS, 1.1.3, DK22Pac & RusJJ)
 NEEDGAME(com.rockstargames.gtasa)
 
 CVector2D g_vecUnderRadar(0.0, -1.05); // 0
@@ -41,6 +41,7 @@ ConfigEntry* pCfgGPSDrawDistance;
 ConfigEntry* pCfgGPSDrawDistancePosition;
 ConfigEntry* pCfgGPSDrawDistanceTextScale;
 ConfigEntry* pCfgGPSDrawDistanceTextOffset;
+CWidget** aWidgets;
 
 // Game Vars
 RsGlobalType* RsGlobal;
@@ -82,6 +83,11 @@ void (*AsciiToGxtChar)(const char* txt, unsigned short* ret);
 void (*RenderFontBuffer)(void);
 
 
+inline bool IsRadarVisible()
+{
+    CWidget* radar = aWidgets[161];
+    return (radar != NULL && radar->enabled);
+}
 inline bool IsGamePaused() { return *m_CodePause || *m_UserPause; };
 inline bool IsRGBValue(int value) { return value >= 0 && value <= 255; }
 void InitializeConfigValues()
@@ -111,7 +117,7 @@ unsigned short* textGxt = new unsigned short[0xFF];
 DECL_HOOK(void, PreRenderEnd, void* self)
 {
     PreRenderEnd(self);
-    if(gpsDistance > 0.0f && !IsGamePaused() && pCfgGPSDrawDistance->GetBool())
+    if(gpsDistance > 0.0f && !IsGamePaused() && IsRadarVisible() && pCfgGPSDrawDistance->GetBool())
     {
         if(gpsDistance == 100000.0f) sprintf(text, "Far from the road!");
         else if (gpsDistance >= 1000.0f) sprintf(text, "%.2fkm", 0.001f * gpsDistance);
@@ -151,7 +157,7 @@ DECL_HOOKv(PostRadarDraw, bool b)
        player->m_pVehicle->m_nVehicleSubType != VEHICLE_TYPE_BMX)
     {
         bool isGamePaused = IsGamePaused();
-        if(TargetBlip.m_nHandleIndex != gMobileMenu->m_TargetBlipHandle.m_nHandleIndex && !isGamePaused)
+        if(TargetBlip.m_nHandleIndex != gMobileMenu->m_TargetBlipHandle.m_nHandleIndex && !isGamePaused && IsRadarVisible())
         {
             TargetBlip = gMobileMenu->m_TargetBlipHandle;
 
@@ -206,7 +212,8 @@ DECL_HOOKv(PostRadarDraw, bool b)
 
         if(nodesCount > 0)
         {
-            if(gpsDistance < pCfgClosestMaxGPSDistance->GetFloat())
+            if((!isGamePaused || !gMobileMenu->m_bDrawMenuMap) &&
+               gpsDistance < pCfgClosestMaxGPSDistance->GetFloat())
             {
                 ClearRadarBlip(TargetBlip.m_nHandleIndex);
                 gMobileMenu->m_TargetBlipHandle.m_nHandleIndex = 0;
@@ -231,43 +238,46 @@ DECL_HOOKv(PostRadarDraw, bool b)
                 }
             }
 
-            if (!isGamePaused || !gMobileMenu->m_bDrawMenuMap) SetScissorRect(radarRect); // Scissor
-            RwRenderStateSet(rwRENDERSTATETEXTURERASTER, NULL);
-
-            unsigned int vertIndex = 0;
-            --nodesCount;
-            for (short i = 0; i < nodesCount; i++)
+            if(IsRadarVisible() || isGamePaused)
             {
-                CVector2D point[4], shift[2];
-                CVector2D dir = CVector2D::Diff(nodePoints[i + 1], nodePoints[i]);
-                float angle = atan2(dir.y, dir.x);
-                if (!isGamePaused)
-                {
-                    shift[0].x = cosf(angle - 1.5707963f) * lineWidth;
-                    shift[0].y = sinf(angle - 1.5707963f) * lineWidth;
-                    shift[1].x = cosf(angle + 1.5707963f) * lineWidth;
-                    shift[1].y = sinf(angle + 1.5707963f) * lineWidth;
-                }
-                else
-                {
-                    float mp = gMobileMenu->m_fMapZoom - 140.0f;
-                    if (mp < 140.0f) mp = 140.0f;
-                    else if (mp > 960.0f) mp = 960.0f;
-                    mp = mp / 960.0f + 0.4f;
+                if (!isGamePaused || !gMobileMenu->m_bDrawMenuMap) SetScissorRect(radarRect); // Scissor
+                RwRenderStateSet(rwRENDERSTATETEXTURERASTER, NULL);
 
-                    shift[0].x = cosf(angle - 1.5707963f) * lineWidth * mp;
-                    shift[0].y = sinf(angle - 1.5707963f) * lineWidth * mp;
-                    shift[1].x = cosf(angle + 1.5707963f) * lineWidth * mp;
-                    shift[1].y = sinf(angle + 1.5707963f) * lineWidth * mp;
+                unsigned int vertIndex = 0;
+                --nodesCount;
+                for (short i = 0; i < nodesCount; i++)
+                {
+                    CVector2D point[4], shift[2];
+                    CVector2D dir = CVector2D::Diff(nodePoints[i + 1], nodePoints[i]);
+                    float angle = atan2(dir.y, dir.x);
+                    if (!isGamePaused)
+                    {
+                        shift[0].x = cosf(angle - 1.5707963f) * lineWidth;
+                        shift[0].y = sinf(angle - 1.5707963f) * lineWidth;
+                        shift[1].x = cosf(angle + 1.5707963f) * lineWidth;
+                        shift[1].y = sinf(angle + 1.5707963f) * lineWidth;
+                    }
+                    else
+                    {
+                        float mp = gMobileMenu->m_fMapZoom - 140.0f;
+                        if (mp < 140.0f) mp = 140.0f;
+                        else if (mp > 960.0f) mp = 960.0f;
+                        mp = mp / 960.0f + 0.4f;
+
+                        shift[0].x = cosf(angle - 1.5707963f) * lineWidth * mp;
+                        shift[0].y = sinf(angle - 1.5707963f) * lineWidth * mp;
+                        shift[1].x = cosf(angle + 1.5707963f) * lineWidth * mp;
+                        shift[1].y = sinf(angle + 1.5707963f) * lineWidth * mp;
+                    }
+                    Setup2DVertex(lineVerts[vertIndex], nodePoints[i].x + shift[0].x, nodePoints[i].y + shift[0].y);
+                    Setup2DVertex(lineVerts[++vertIndex], nodePoints[i + 1].x + shift[0].x, nodePoints[i + 1].y + shift[0].y);
+                    Setup2DVertex(lineVerts[++vertIndex], nodePoints[i].x + shift[1].x, nodePoints[i].y + shift[1].y);
+                    Setup2DVertex(lineVerts[++vertIndex], nodePoints[i + 1].x + shift[1].x, nodePoints[i + 1].y + shift[1].y);
+                    ++vertIndex;
                 }
-                Setup2DVertex(lineVerts[vertIndex], nodePoints[i].x + shift[0].x, nodePoints[i].y + shift[0].y);
-                Setup2DVertex(lineVerts[++vertIndex], nodePoints[i + 1].x + shift[0].x, nodePoints[i + 1].y + shift[0].y);
-                Setup2DVertex(lineVerts[++vertIndex], nodePoints[i].x + shift[1].x, nodePoints[i].y + shift[1].y);
-                Setup2DVertex(lineVerts[++vertIndex], nodePoints[i + 1].x + shift[1].x, nodePoints[i + 1].y + shift[1].y);
-                ++vertIndex;
+                RwIm2DRenderPrimitive(rwPRIMTYPETRISTRIP, lineVerts, 4 * nodesCount);
+                if (!isGamePaused || !gMobileMenu->m_bDrawMenuMap) SetScissorRect(emptyRect); // Scissor
             }
-            RwIm2DRenderPrimitive(rwPRIMTYPETRISTRIP, lineVerts, 4 * nodesCount);
-            if (!isGamePaused || !gMobileMenu->m_bDrawMenuMap) SetScissorRect(emptyRect); // Scissor
         }
     }
     else
@@ -341,7 +351,8 @@ extern "C" void OnModLoad()
     SET_TO(AsciiToGxtChar,                      aml->GetSym(hGTASA, "_Z14AsciiToGxtCharPKcPt"));
     SET_TO(RenderFontBuffer,                    aml->GetSym(hGTASA, "_ZN5CFont16RenderFontBufferEv"));
 
-    HOOKPLT(PreRenderEnd,   pGTASA + 0x674188);
-    HOOKPLT(InitRenderWare, pGTASA + 0x66F2D0);
-    HOOK(PostRadarDraw,     aml->GetSym(hGTASA, "_ZN6CRadar20DrawRadarGangOverlayEb"));
+    HOOKPLT(PreRenderEnd,                       pGTASA + 0x674188);
+    HOOKPLT(InitRenderWare,                     pGTASA + 0x66F2D0);
+    HOOK(PostRadarDraw,                         aml->GetSym(hGTASA, "_ZN6CRadar20DrawRadarGangOverlayEb"));
+    SET_TO(aWidgets,                            *(void**)(pGTASA + 0x67947C));
 }
