@@ -5,13 +5,14 @@
 
 #include <GTASA_STRUCTS.h>
 
+#define MAX_PATH_NODES  50000
 #define MAX_NODE_POINTS 2000
 #define GPS_LINE_R      235
 #define GPS_LINE_G      212
 #define GPS_LINE_B      0
 #define GPS_LINE_A      255
 
-MYMODCFG(net.dk22pac.rusjj.gps, GTA:SA GPS, 1.1.3, DK22Pac & RusJJ)
+MYMODCFG(net.dk22pac.rusjj.gps, GTA:SA GPS, 1.2, DK22Pac & juicermv & RusJJ)
 NEEDGAME(com.rockstargames.gtasa)
 
 CVector2D g_vecUnderRadar(0.0, -1.05); // 0
@@ -19,6 +20,10 @@ CVector2D g_vecAboveRadar(0.0, 1.05); // 1
 CVector2D g_vecLeftRadar(-1.05, 0.0); // 2
 CVector2D g_vecRightRadar(1.05, 0.0); // 3
 eFontAlignment g_nTextAlignment;
+
+// Patched
+CNodeAddress aStreamablePathNodes[256];
+CNodeAddress aPathNodes[MAX_PATH_NODES];
 
 // Savings
 uintptr_t pGTASA;
@@ -294,6 +299,17 @@ extern "C" void OnModLoad()
     hGTASA = dlopen("libGTASA.so", RTLD_LAZY);
 
     pCfgClosestMaxGPSDistance = cfg->Bind("ClosestMaxGPSDistance", 30.0f);
+    if(pCfgClosestMaxGPSDistance->GetFloat() < 0)
+    {
+        pCfgClosestMaxGPSDistance->SetFloat(0.0f);
+        cfg->Save();
+    }
+    else if(pCfgClosestMaxGPSDistance->GetFloat() > 128)
+    {
+        pCfgClosestMaxGPSDistance->SetFloat(128.0f);
+        cfg->Save();
+    }
+    
     pCfgGPSLineColorRGB = cfg->Bind("GPSLineColorRGB", "235 212 0 255");
     pCfgGPSLineWidth = cfg->Bind("GPSLineWidth", 4.0f); lineWidth = pCfgGPSLineWidth->GetFloat();
     pCfgGPSDrawDistance = cfg->Bind("GPSDrawDistance", true);
