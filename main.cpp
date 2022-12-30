@@ -33,7 +33,7 @@ uintptr_t pGTASA;
 void* hGTASA;
 CNodeAddress resultNodes[MAX_NODE_POINTS];
 CVector2D nodePoints[MAX_NODE_POINTS];
-RwOpenGLVertex lineVerts[MAX_NODE_POINTS * 4];
+RwOpenGLVertex lineVerts[MAX_NODE_POINTS * 4] {0};
 float gpsDistance;
 CVector2D gpsDistanceTextPos;
 CRect emptyRect, radarRect;
@@ -111,14 +111,76 @@ void InitializeConfigValues()
     }
 }
 
-void Setup2DVertex(RwOpenGLVertex &vertex, float x, float y)
+void SetDistanceTextValues()
+{
+    CVector2D posn;
+    TransformRadarPointToScreenSpace(posn, CVector2D(-1.0f, -1.0f));
+    radarRect.left = posn.x + 2.0f;
+    radarRect.bottom = posn.y - 2.0f;
+    TransformRadarPointToScreenSpace(posn, CVector2D(1.0f, 1.0f));
+    radarRect.right = posn.x - 2.0f;
+    radarRect.top = posn.y + 2.0f;
+            
+    switch(pCfgGPSDrawDistancePosition->GetInt())
+    {
+        case 0: // Under
+            g_nTextAlignment = ALIGN_CENTER;
+            TransformRadarPointToScreenSpace(gpsDistanceTextPos, g_vecUnderRadar);
+            gpsDistanceTextPos += vecTextOffset;
+            gpsDistanceTextPos.y += textOffset;
+            break;
+
+        case 1: // Above
+            g_nTextAlignment = ALIGN_CENTER;
+            TransformRadarPointToScreenSpace(gpsDistanceTextPos, g_vecAboveRadar);
+            gpsDistanceTextPos += vecTextOffset;
+            gpsDistanceTextPos.y -= textOffset;
+            break;
+
+        case 2: // Left
+            g_nTextAlignment = ALIGN_RIGHT;
+            TransformRadarPointToScreenSpace(gpsDistanceTextPos, g_vecLeftRadar);
+            gpsDistanceTextPos += vecTextOffset;
+            gpsDistanceTextPos.x -= textOffset;
+            break;
+
+        case 3: // Right
+            g_nTextAlignment = ALIGN_LEFT;
+            TransformRadarPointToScreenSpace(gpsDistanceTextPos, g_vecRightRadar);
+            gpsDistanceTextPos += vecTextOffset;
+            gpsDistanceTextPos.x += textOffset;
+            break;
+    }
+}
+
+inline void Setup2DVertex(RwOpenGLVertex &vertex, float x, float y, RwUInt32 color)
 {
     vertex.pos.x = x;
     vertex.pos.y = y;
-    vertex.texCoord.u = vertex.texCoord.v = 0.0f;
+    //vertex.texCoord.u = vertex.texCoord.v = 0.0f;
     vertex.pos.z = *NearScreenZ + 0.0001f;
     vertex.rhw = *RecipNearClip;
-    vertex.color = gpsLineColor;
+    vertex.color = color;
+}
+
+inline bool IsBMXNaviAllowed(CPlayerPed* player)
+{
+    return bAllowBMX || (!bAllowBMX && player->m_pVehicle->m_nVehicleSubType != VEHICLE_TYPE_BMX);
+}
+
+inline bool IsInSupportedVehicle(CPlayerPed* player)
+{
+    return (player && 
+       player->m_pVehicle &&
+       player->m_PedFlags.bInVehicle &&
+       player->m_pVehicle->m_nVehicleSubType != VEHICLE_TYPE_PLANE &&
+       player->m_pVehicle->m_nVehicleSubType != VEHICLE_TYPE_HELI &&
+       IsBMXNaviAllowed(player));
+}
+
+inline bool LaneDirectionRespected()
+{
+    return true;
 }
 
 char text[24];
@@ -152,76 +214,20 @@ DECL_HOOKv(InitRenderWare)
     InitializeConfigValues();
 }
 
-DECL_HOOKv(PostRadarDraw, bool b)
+void DoPathDraw(CVector to, RwUInt32 color, bool isTargetBlip, float* dist = NULL)
 {
-    PostRadarDraw(b);
-
-    CPlayerPed* player;
-    if(gMobileMenu->m_TargetBlipHandle.m_nHandleIndex &&
-       (player=FindPlayerPed(0)) && 
-       player->m_pVehicle &&
-       player->m_PedFlags.bInVehicle &&
-       player->m_pVehicle->m_nVehicleSubType != VEHICLE_TYPE_PLANE &&
-       player->m_pVehicle->m_nVehicleSubType != VEHICLE_TYPE_HELI)
-    if(bAllowBMX || (!bAllowBMX && player->m_pVehicle->m_nVehicleSubType != VEHICLE_TYPE_BMX))
-    {
-        bool isGamePaused = IsGamePaused();
-        if(TargetBlip.m_nHandleIndex != gMobileMenu->m_TargetBlipHandle.m_nHandleIndex && !isGamePaused && IsRadarVisible())
-        {
-            TargetBlip = gMobileMenu->m_TargetBlipHandle;
-
-            CVector2D posn;
-            TransformRadarPointToScreenSpace(posn, CVector2D(-1.0f, -1.0f));
-            radarRect.left = posn.x + 2.0f;
-            radarRect.bottom = posn.y - 2.0f;
-            TransformRadarPointToScreenSpace(posn, CVector2D(1.0f, 1.0f));
-            radarRect.right = posn.x - 2.0f;
-            radarRect.top = posn.y + 2.0f;
-            
-            switch(pCfgGPSDrawDistancePosition->GetInt())
-            {
-                case 0: // Under
-                    g_nTextAlignment = ALIGN_CENTER;
-                    TransformRadarPointToScreenSpace(gpsDistanceTextPos, g_vecUnderRadar);
-                    gpsDistanceTextPos += vecTextOffset;
-                    gpsDistanceTextPos.y += textOffset;
-                    break;
-
-                case 1: // Above
-                    g_nTextAlignment = ALIGN_CENTER;
-                    TransformRadarPointToScreenSpace(gpsDistanceTextPos, g_vecAboveRadar);
-                    gpsDistanceTextPos += vecTextOffset;
-                    gpsDistanceTextPos.y -= textOffset;
-                    break;
-
-                case 2: // Left
-                    g_nTextAlignment = ALIGN_RIGHT;
-                    TransformRadarPointToScreenSpace(gpsDistanceTextPos, g_vecLeftRadar);
-                    gpsDistanceTextPos += vecTextOffset;
-                    gpsDistanceTextPos.x -= textOffset;
-                    break;
-
-                case 3: // Right
-                    g_nTextAlignment = ALIGN_LEFT;
-                    TransformRadarPointToScreenSpace(gpsDistanceTextPos, g_vecRightRadar);
-                    gpsDistanceTextPos += vecTextOffset;
-                    gpsDistanceTextPos.x += textOffset;
-                    break;
-            }
-        }
-
-        CVector& bpos = pRadarTrace[gMobileMenu->m_TargetBlipHandle.m_nId].m_vecWorldPosition;
-        if(bpos.z == 0)
-        {
-            bpos.z = FindGroundZForCoord(bpos.x, bpos.y) + 5.0f;
-        }
-
-        short nodesCount = 0;
-        DoPathSearch((uintptr_t)ThePaths, player->m_pVehicle->m_nVehicleSubType == VEHICLE_TYPE_BOAT, player->GetPosition(), CNodeAddress(), bpos, resultNodes, &nodesCount, MAX_NODE_POINTS, &gpsDistance, 1000000.0f, NULL, 1000000.0f, false, CNodeAddress(), false, player->m_pVehicle->m_nVehicleSubType == VEHICLE_TYPE_BOAT);
+    CPlayerPed* player = FindPlayerPed(-1);
+    if(!IsInSupportedVehicle(player)) return;
+    
+    short nodesCount = 0;
+    float trashVar;
+    bool isGamePaused = IsGamePaused();
+    
+    DoPathSearch((uintptr_t)ThePaths, LaneDirectionRespected() && player->m_pVehicle->m_nVehicleSubType == VEHICLE_TYPE_BOAT, player->GetPosition(), CNodeAddress(), to, resultNodes, &nodesCount, MAX_NODE_POINTS, dist ? dist : &trashVar, 1000000.0f, NULL, 1000000.0f, false, CNodeAddress(), false, player->m_pVehicle->m_nVehicleSubType == VEHICLE_TYPE_BOAT);
 
         if(nodesCount > 0)
         {
-            if((!isGamePaused || !gMobileMenu->m_bDrawMenuMap) &&
+            if(isTargetBlip && (!isGamePaused || !gMobileMenu->m_bDrawMenuMap) &&
                gpsDistance < pCfgClosestMaxGPSDistance->GetFloat())
             {
                 ClearRadarBlip(TargetBlip.m_nHandleIndex);
@@ -278,16 +284,40 @@ DECL_HOOKv(PostRadarDraw, bool b)
                         shift[1].x = cosf(angle + 1.5707963f) * lineWidth * mp;
                         shift[1].y = sinf(angle + 1.5707963f) * lineWidth * mp;
                     }
-                    Setup2DVertex(lineVerts[vertIndex], nodePoints[i].x + shift[0].x, nodePoints[i].y + shift[0].y);
-                    Setup2DVertex(lineVerts[++vertIndex], nodePoints[i + 1].x + shift[0].x, nodePoints[i + 1].y + shift[0].y);
-                    Setup2DVertex(lineVerts[++vertIndex], nodePoints[i].x + shift[1].x, nodePoints[i].y + shift[1].y);
-                    Setup2DVertex(lineVerts[++vertIndex], nodePoints[i + 1].x + shift[1].x, nodePoints[i + 1].y + shift[1].y);
+                    Setup2DVertex(lineVerts[vertIndex], nodePoints[i].x + shift[0].x, nodePoints[i].y + shift[0].y, color);
+                    Setup2DVertex(lineVerts[++vertIndex], nodePoints[i + 1].x + shift[0].x, nodePoints[i + 1].y + shift[0].y, color);
+                    Setup2DVertex(lineVerts[++vertIndex], nodePoints[i].x + shift[1].x, nodePoints[i].y + shift[1].y, color);
+                    Setup2DVertex(lineVerts[++vertIndex], nodePoints[i + 1].x + shift[1].x, nodePoints[i + 1].y + shift[1].y, color);
                     ++vertIndex;
                 }
                 RwIm2DRenderPrimitive(rwPRIMTYPETRISTRIP, lineVerts, 4 * nodesCount);
                 if (!isGamePaused || !gMobileMenu->m_bDrawMenuMap) SetScissorRect(emptyRect); // Scissor
             }
         }
+}
+
+DECL_HOOKv(PostRadarDraw, bool b)
+{
+    PostRadarDraw(b);
+
+    if(gMobileMenu->m_TargetBlipHandle.m_nHandleIndex)
+    {
+        bool isGamePaused = IsGamePaused();
+        if(TargetBlip.m_nHandleIndex != gMobileMenu->m_TargetBlipHandle.m_nHandleIndex && !isGamePaused && IsRadarVisible())
+        {
+            TargetBlip = gMobileMenu->m_TargetBlipHandle;
+
+            static bool bInit = false;
+            if(!bInit)
+            {
+                bInit = true;
+                SetDistanceTextValues();
+            }
+        }
+
+        CVector& bpos = pRadarTrace[gMobileMenu->m_TargetBlipHandle.m_nId].m_vecWorldPosition;
+        if(bpos.z == 0) bpos.z = FindGroundZForCoord(bpos.x, bpos.y) + 5.0f;
+        DoPathDraw(bpos, gpsLineColor, true, &gpsDistance);
     }
     else
     {
@@ -319,7 +349,7 @@ extern "C" void OnModLoad()
         cfg->Save();
     }
     
-    pCfgGPSLineColorRGB = cfg->Bind("GPSLineColorRGB", "235 212 0 255");
+    pCfgGPSLineColorRGB = cfg->Bind("GPSLineColorRGB", STRINGIFY(GPS_LINE_R)" " STRINGIFY(GPS_LINE_G)" " STRINGIFY(GPS_LINE_B)" " STRINGIFY(GPS_LINE_A));
     pCfgGPSLineWidth = cfg->Bind("GPSLineWidth", 4.0f); lineWidth = pCfgGPSLineWidth->GetFloat();
     pCfgGPSDrawDistance = cfg->Bind("GPSDrawDistance", true);
     pCfgGPSDrawDistancePosition = cfg->Bind("GPSDrawDistancePos", 0); // 0 under, 1 above, 2 left, 3 right
@@ -338,7 +368,7 @@ extern "C" void OnModLoad()
     }
     else
     {
-        pCfgGPSLineColorRGB->SetString("235 212 0 255");
+        pCfgGPSLineColorRGB->SetString(STRINGIFY(GPS_LINE_R)" " STRINGIFY(GPS_LINE_G)" " STRINGIFY(GPS_LINE_B)" " STRINGIFY(GPS_LINE_A));
         cfg->Save();
     }
 
