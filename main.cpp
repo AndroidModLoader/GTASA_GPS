@@ -6,6 +6,9 @@
 #include <GTASA_STRUCTS.h>
 
 #define MAX_PATH_NODES  50000
+#define STREAM_NODES    64 // def 8
+#define STREAM_RADIUS   9000.0f
+#define STREAM_RADIUS_LIMIT STREAM_RADIUS*1.01f
 #define MAX_NODE_POINTS 2000
 #define GPS_LINE_R      235
 #define GPS_LINE_G      212
@@ -22,8 +25,8 @@ CVector2D g_vecRightRadar(1.05, 0.0); // 3
 eFontAlignment g_nTextAlignment;
 
 // Patched
-CNodeAddress aStreamablePathNodes[256];
-CNodeAddress aPathNodes[MAX_PATH_NODES];
+CNodeAddress aPathNodes[MAX_PATH_NODES] = {-1, -1};
+CNodeAddress aStreamablePathNodes[STREAM_NODES] = {1};
 
 // Savings
 uintptr_t pGTASA;
@@ -46,7 +49,7 @@ ConfigEntry* pCfgGPSDrawDistance;
 ConfigEntry* pCfgGPSDrawDistancePosition;
 ConfigEntry* pCfgGPSDrawDistanceTextScale;
 ConfigEntry* pCfgGPSDrawDistanceTextOffset;
-CWidget** aWidgets;
+bool bAllowBMX;
 
 // Game Vars
 RsGlobalType* RsGlobal;
@@ -57,6 +60,7 @@ ScriptHandle TargetBlip;
 float* NearScreenZ;
 float* RecipNearClip;
 bool *m_UserPause, *m_CodePause;
+CWidget** aWidgets;
 
 // Game Funcs
 CPlayerPed* (*FindPlayerPed)(int);
@@ -158,8 +162,8 @@ DECL_HOOKv(PostRadarDraw, bool b)
        player->m_pVehicle &&
        player->m_PedFlags.bInVehicle &&
        player->m_pVehicle->m_nVehicleSubType != VEHICLE_TYPE_PLANE &&
-       player->m_pVehicle->m_nVehicleSubType != VEHICLE_TYPE_HELI &&
-       player->m_pVehicle->m_nVehicleSubType != VEHICLE_TYPE_BMX)
+       player->m_pVehicle->m_nVehicleSubType != VEHICLE_TYPE_HELI)
+    if(bAllowBMX || (!bAllowBMX && player->m_pVehicle->m_nVehicleSubType != VEHICLE_TYPE_BMX))
     {
         bool isGamePaused = IsGamePaused();
         if(TargetBlip.m_nHandleIndex != gMobileMenu->m_TargetBlipHandle.m_nHandleIndex && !isGamePaused && IsRadarVisible())
@@ -292,6 +296,11 @@ DECL_HOOKv(PostRadarDraw, bool b)
     }
 }
 
+extern "C" void adadad(void) 
+{ 
+    asm volatile("MOVW R2, #0xC31E");
+} // This one is used internally for myself. Helps me to get patched values.
+
 extern "C" void OnModLoad()
 {
     logger->SetTag("GPS AML");
@@ -316,6 +325,7 @@ extern "C" void OnModLoad()
     pCfgGPSDrawDistancePosition = cfg->Bind("GPSDrawDistancePos", 0); // 0 under, 1 above, 2 left, 3 right
     pCfgGPSDrawDistanceTextScale = cfg->Bind("GPSDrawDistanceTextScale", 1.0f);
     pCfgGPSDrawDistanceTextOffset = cfg->Bind("GPSDrawDistanceTextOffset", "0.0 0.0");
+    bAllowBMX = cfg->Bind("AllowBMX", false)->GetBool();
 
     int r, g, b, a, sscanfed = sscanf(pCfgGPSLineColorRGB->GetString(), "%d %d %d %d", &r, &g, &b, &a);
     if(sscanfed == 4 && IsRGBValue(r) && IsRGBValue(g) && IsRGBValue(b) && IsRGBValue(a))
@@ -371,4 +381,34 @@ extern "C" void OnModLoad()
     HOOKPLT(InitRenderWare,                     pGTASA + 0x66F2D0);
     HOOK(PostRadarDraw,                         aml->GetSym(hGTASA, "_ZN6CRadar20DrawRadarGangOverlayEb"));
     SET_TO(aWidgets,                            *(void**)(pGTASA + 0x67947C));
+    
+    // Patches
+    // CPathFind::DoPathSearch, 0x315B06
+    aml->Write(pGTASA + 0x315B06, (uintptr_t)"\x4C\xF2\x50\x32", 4); // 4999 -> 50000
+    aml->Write(pGTASA + 0x315BC4, (uintptr_t)"\x4C\xF2\x1E\x32", 4); // 4950 -> 49950
+    aml->Unprot(pGTASA + 0x315D30, sizeof(void*)); *(uintptr_t*)(pGTASA + 0x315D30) = (uintptr_t)aPathNodes - 0x31598A - pGTASA;
+    aml->Unprot(pGTASA + 0x315D34, sizeof(void*)); *(uintptr_t*)(pGTASA + 0x315D34) = (uintptr_t)aPathNodes - 0x315BE2 - pGTASA;
+    aml->Unprot(pGTASA + 0x315D38, sizeof(void*)); *(uintptr_t*)(pGTASA + 0x315D38) = (uintptr_t)aPathNodes - 0x315D08 - pGTASA;
+    aml->Unprot(pGTASA + 0x315D3C, sizeof(void*)); *(uintptr_t*)(pGTASA + 0x315D3C) = (uintptr_t)aPathNodes - 0x315B20 - pGTASA;
+    
+    aml->Unprot(pGTASA + 0x67899C, sizeof(void*)); *(uintptr_t*)(pGTASA + 0x67899C) = (uintptr_t)aStreamablePathNodes;
+    aml->Unprot(pGTASA + 0x31A04C, sizeof(float)); *(float*)(pGTASA + 0x31A04C) = -STREAM_RADIUS;
+    aml->Unprot(pGTASA + 0x31A050, sizeof(float)); *(float*)(pGTASA + 0x31A050) = STREAM_RADIUS;
+    aml->Unprot(pGTASA + 0x31A054, sizeof(float)); *(float*)(pGTASA + 0x31A054) = STREAM_RADIUS_LIMIT;
+    aml->Unprot(pGTASA + 0x31A058, sizeof(float)); *(float*)(pGTASA + 0x31A058) = 750.0f;
+    
+    aml->Unprot(pGTASA + 0x319E6C + 0x2, sizeof(char)); *(unsigned char*)(pGTASA + 0x319E6C + 0x2) = STREAM_NODES-1;
+    aml->Unprot(pGTASA + 0x319EC2 + 0x0, sizeof(char)); *(unsigned char*)(pGTASA + 0x319EC2 + 0x0) = STREAM_NODES-1;
+    aml->Unprot(pGTASA + 0x319EE4 + 0x2, sizeof(char)); *(unsigned char*)(pGTASA + 0x319EE4 + 0x2) = STREAM_NODES-1;
+    aml->Unprot(pGTASA + 0x319EF2 + 0x0, sizeof(char)); *(unsigned char*)(pGTASA + 0x319EF2 + 0x0) = STREAM_NODES-1;
+    aml->Unprot(pGTASA + 0x319EFE + 0x0, sizeof(char)); *(unsigned char*)(pGTASA + 0x319EFE + 0x0) = STREAM_NODES-1;
+    aml->Unprot(pGTASA + 0x319F0A + 0x0, sizeof(char)); *(unsigned char*)(pGTASA + 0x319F0A + 0x0) = STREAM_NODES-1;
+    
+    aml->Unprot(pGTASA + 0x319F28 + 0x2, sizeof(char)); *(unsigned char*)(pGTASA + 0x319F28 + 0x2) = STREAM_NODES;
+    aml->Unprot(pGTASA + 0x319F32 + 0x2, sizeof(char)); *(unsigned char*)(pGTASA + 0x319F32 + 0x2) = STREAM_NODES;
+    
+    aml->Unprot(pGTASA + 0x3199A8, sizeof(float)); *(float*)(pGTASA + 0x3199A8) = -STREAM_RADIUS;
+    aml->Unprot(pGTASA + 0x3199AC, sizeof(float)); *(float*)(pGTASA + 0x3199AC) = STREAM_RADIUS;
+    aml->Unprot(pGTASA + 0x3199B0, sizeof(float)); *(float*)(pGTASA + 0x3199B0) = STREAM_RADIUS_LIMIT;
+    aml->Unprot(pGTASA + 0x3199B4, sizeof(float)); *(float*)(pGTASA + 0x3199B4) = 750.0f;
 }
