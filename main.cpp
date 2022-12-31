@@ -62,6 +62,7 @@ float* NearScreenZ;
 float* RecipNearClip;
 bool *m_UserPause, *m_CodePause;
 CWidget** aWidgets;
+CPickup* aPickUps;
 
 // Game Funcs
 CPlayerPed* (*FindPlayerPed)(int);
@@ -416,11 +417,19 @@ DECL_HOOKv(PostRadarDraw, bool b)
                 case BLIP_OBJECT:
                     DoPathDraw(GetPoolObj(traces[maxi]->m_nEntityHandle)->GetPosition(), GetTraceColor(traces[maxi]->m_nColour, traces[maxi]->m_bFriendly), false, !TargetBlip.m_nHandleIndex ? &gpsDistance : NULL);
                     break;
+                    
+                case BLIP_PICKUP:
+                {
+                    CPickup* p = &aPickUps[traces[maxi]->m_ScriptHandle.m_nId];
+                    DoPathDraw(UncompressLargeVector(p->m_vecPos), GetTraceColor(traces[maxi]->m_nColour, traces[maxi]->m_bFriendly), false, !TargetBlip.m_nHandleIndex ? &gpsDistance : NULL);
+                    break;
+                }
                         
                 case BLIP_COORD:
                 case BLIP_CONTACT_POINT:
                     DoPathDraw(traces[maxi]->m_vecWorldPosition, GetTraceColor(traces[maxi]->m_nColour, traces[maxi]->m_bFriendly), false, !TargetBlip.m_nHandleIndex ? &gpsDistance : NULL);
-                        
+                    break;
+                    
                 default:
                     break;
             }
@@ -513,6 +522,7 @@ extern "C" void OnModLoad()
     HOOKPLT(InitRenderWare,                     pGTASA + 0x66F2D0);
     HOOK(PostRadarDraw,                         aml->GetSym(hGTASA, "_ZN6CRadar20DrawRadarGangOverlayEb"));
     SET_TO(aWidgets,                            *(void**)(pGTASA + 0x67947C));
+    SET_TO(aPickUps,                            aml->GetSym(hGTASA, "_ZN8CPickups8aPickUpsE"));
     
     // Patches
     // CPathFind::DoPathSearch, 0x315B06
