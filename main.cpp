@@ -41,6 +41,7 @@ CRect emptyRect, radarRect;
 unsigned int gpsLineColor = RWRGBALONG(GPS_LINE_R, GPS_LINE_G, GPS_LINE_B, GPS_LINE_A);
 float lineWidth = 3.5f, textOffset, textScale, flMenuMapScaling;
 CVector2D vecTextOffset;
+tRadarTrace* pTrace;
 
 // Config
 ConfigEntry* pCfgClosestMaxGPSDistance;
@@ -50,14 +51,14 @@ ConfigEntry* pCfgGPSDrawDistance;
 ConfigEntry* pCfgGPSDrawDistancePosition;
 ConfigEntry* pCfgGPSDrawDistanceTextScale;
 ConfigEntry* pCfgGPSDrawDistanceTextOffset;
-bool bAllowBMX, bAllowBoat;
+bool bAllowBMX, bAllowBoat, bAllowMission;
 
 // Game Vars
 RsGlobalType* RsGlobal;
 tRadarTrace* pRadarTrace;
 MobileMenu* gMobileMenu;
 int* ThePaths;
-ScriptHandle TargetBlip;
+ScriptHandle TargetBlip {0};
 float* NearScreenZ;
 float* RecipNearClip;
 bool *m_UserPause, *m_CodePause;
@@ -144,6 +145,37 @@ RwUInt32 GetTraceColor(eBlipColour clr, bool friendly = false)
         default:
             CRGBA a((int)clr);
             return RWRGBALONG(a.r, a.g, a.b, 255);
+    }
+}
+
+CRGBA rgbclr;
+CRGBA& GetTraceTextColor(eBlipColour clr, bool friendly = false)
+{
+    switch(clr)
+    {
+        case BLIP_COLOUR_RED:
+            return rgbclr = CRGBA(127,0,0,255);
+        case BLIP_COLOUR_GREEN:
+            return rgbclr = CRGBA(0,127,0,255);
+        case BLIP_COLOUR_BLUE:
+            return rgbclr = CRGBA(0,0,127,255);
+        case BLIP_COLOUR_WHITE:
+            return rgbclr = CRGBA(127,127,127,255);
+        case BLIP_COLOUR_YELLOW:
+            return rgbclr = CRGBA(200,200,0,255);
+        case BLIP_COLOUR_PURPLE:
+            return rgbclr = CRGBA(127,0,127,255);
+        case BLIP_COLOUR_CYAN:
+            return rgbclr = CRGBA(0,127,127,255);
+        case BLIP_COLOUR_THREAT:
+            return friendly ? rgbclr = CRGBA(0,0,127,255) : rgbclr = CRGBA(127,0,0,255);
+        case BLIP_COLOUR_DESTINATION:
+            return rgbclr = CRGBA(200,200,0,255);
+            
+        default:
+            rgbclr = CRGBA((int)clr);
+            rgbclr.a = 255;
+            return rgbclr;
     }
 }
 
@@ -237,13 +269,20 @@ DECL_HOOK(void, PreRenderEnd, void* self)
     PreRenderEnd(self);
     if(gpsDistance > 0.0f && !IsGamePaused() && IsRadarVisible() && pCfgGPSDrawDistance->GetBool())
     {
+        static bool bInit = false;
+        if(!bInit)
+        {
+            bInit = true;
+            SetDistanceTextValues();
+        }
+        
         if(gpsDistance == 100000.0f) sprintf(text, "Far from the road!");
         else if (gpsDistance >= 1000.0f) sprintf(text, "%.2fkm", 0.001f * gpsDistance);
         else sprintf(text, "%dm", (int)gpsDistance);
         AsciiToGxtChar(text, textGxt);
 
         FontSetOrientation(g_nTextAlignment);
-        if(!TargetBlip.m_nHandleIndex) FontSetColor((CRGBA*)&rgbaOrange);
+        if(!TargetBlip.m_nHandleIndex) FontSetColor((CRGBA*)&GetTraceTextColor(pTrace->m_nColour, pTrace->m_bFriendly));
         else FontSetColor((CRGBA*)&rgbaWhite);
         FontSetBackground(false, false);
         FontSetWrapx(500.0f);
@@ -357,13 +396,6 @@ DECL_HOOKv(PostRadarDraw, bool b)
         if(TargetBlip.m_nHandleIndex != gMobileMenu->m_TargetBlipHandle.m_nHandleIndex && !isGamePaused && IsRadarVisible())
         {
             TargetBlip = gMobileMenu->m_TargetBlipHandle;
-
-            static bool bInit = false;
-            if(!bInit)
-            {
-                bInit = true;
-                SetDistanceTextValues();
-            }
         }
 
         CVector& bpos = pRadarTrace[gMobileMenu->m_TargetBlipHandle.m_nId].m_vecWorldPosition;
@@ -375,7 +407,7 @@ DECL_HOOKv(PostRadarDraw, bool b)
         TargetBlip.m_nHandleIndex = 0;
     }
         
-    if(IsOnAMission())
+    if(bAllowMission && IsOnAMission())
     {
         CPlayerPed* player = FindPlayerPed(-1);
         unsigned char count = 0, maxi = 0;
@@ -403,31 +435,32 @@ DECL_HOOKv(PostRadarDraw, bool b)
                 if(distances[i] > maxdist) maxi = i;
                 if(distances[i] == FLT_MAX) break;
             }
+            pTrace = traces[maxi];
                 
-            switch(traces[maxi]->m_nBlipType)
+            switch(pTrace->m_nBlipType)
             {
                 case BLIP_CAR:
-                    DoPathDraw(GetPoolVeh(traces[maxi]->m_nEntityHandle)->GetPosition(), GetTraceColor(traces[maxi]->m_nColour, traces[maxi]->m_bFriendly), false, !TargetBlip.m_nHandleIndex ? &gpsDistance : NULL);
+                    DoPathDraw(GetPoolVeh(pTrace->m_nEntityHandle)->GetPosition(), GetTraceColor(pTrace->m_nColour, pTrace->m_bFriendly), false, !TargetBlip.m_nHandleIndex ? &gpsDistance : NULL);
                     break;
                         
                 case BLIP_CHAR:
-                    DoPathDraw(GetPoolPed(traces[maxi]->m_nEntityHandle)->GetPosition(), GetTraceColor(traces[maxi]->m_nColour, traces[maxi]->m_bFriendly), false, !TargetBlip.m_nHandleIndex ? &gpsDistance : NULL);
+                    DoPathDraw(GetPoolPed(pTrace->m_nEntityHandle)->GetPosition(), GetTraceColor(pTrace->m_nColour, pTrace->m_bFriendly), false, !TargetBlip.m_nHandleIndex ? &gpsDistance : NULL);
                     break;
                         
                 case BLIP_OBJECT:
-                    DoPathDraw(GetPoolObj(traces[maxi]->m_nEntityHandle)->GetPosition(), GetTraceColor(traces[maxi]->m_nColour, traces[maxi]->m_bFriendly), false, !TargetBlip.m_nHandleIndex ? &gpsDistance : NULL);
+                    DoPathDraw(GetPoolObj(pTrace->m_nEntityHandle)->GetPosition(), GetTraceColor(pTrace->m_nColour, pTrace->m_bFriendly), false, !TargetBlip.m_nHandleIndex ? &gpsDistance : NULL);
                     break;
                     
                 case BLIP_PICKUP:
                 {
-                    CPickup* p = &aPickUps[traces[maxi]->m_ScriptHandle.m_nId];
-                    DoPathDraw(UncompressLargeVector(p->m_vecPos), GetTraceColor(traces[maxi]->m_nColour, traces[maxi]->m_bFriendly), false, !TargetBlip.m_nHandleIndex ? &gpsDistance : NULL);
+                    CPickup* p = &aPickUps[pTrace->m_ScriptHandle.m_nId];
+                    DoPathDraw(UncompressLargeVector(p->m_vecPos), GetTraceColor(pTrace->m_nColour, pTrace->m_bFriendly), false, !TargetBlip.m_nHandleIndex ? &gpsDistance : NULL);
                     break;
                 }
                         
                 case BLIP_COORD:
                 case BLIP_CONTACT_POINT:
-                    DoPathDraw(traces[maxi]->m_vecWorldPosition, GetTraceColor(traces[maxi]->m_nColour, traces[maxi]->m_bFriendly), false, !TargetBlip.m_nHandleIndex ? &gpsDistance : NULL);
+                    DoPathDraw(pTrace->m_vecWorldPosition, GetTraceColor(pTrace->m_nColour, pTrace->m_bFriendly), false, !TargetBlip.m_nHandleIndex ? &gpsDistance : NULL);
                     break;
                     
                 default:
@@ -458,11 +491,12 @@ extern "C" void OnModLoad()
     pCfgGPSLineColorRGB = cfg->Bind("GPSLineColorRGB", STRINGIFY(GPS_LINE_R)" " STRINGIFY(GPS_LINE_G)" " STRINGIFY(GPS_LINE_B)" " STRINGIFY(GPS_LINE_A));
     pCfgGPSLineWidth = cfg->Bind("GPSLineWidth", 4.0f); lineWidth = pCfgGPSLineWidth->GetFloat();
     pCfgGPSDrawDistance = cfg->Bind("GPSDrawDistance", true);
-    pCfgGPSDrawDistancePosition = cfg->Bind("GPSDrawDistancePos", 0); // 0 under, 1 above, 2 left, 3 right
+    pCfgGPSDrawDistancePosition = cfg->Bind("GPSDrawDistancePos", 0); // 0 under, 1 above, 2 left, 3 right, 4 custom
     pCfgGPSDrawDistanceTextScale = cfg->Bind("GPSDrawDistanceTextScale", 1.0f);
     pCfgGPSDrawDistanceTextOffset = cfg->Bind("GPSDrawDistanceTextOffset", "0.0 0.0");
     bAllowBMX = cfg->Bind("AllowBMX", false)->GetBool();
     bAllowBoat = cfg->Bind("AllowBoatNavi", true)->GetBool();
+    bAllowMission = cfg->Bind("MissionRoutes", true)->GetBool();
     
     int r, g, b, a, sscanfed = sscanf(pCfgGPSLineColorRGB->GetString(), "%d %d %d %d", &r, &g, &b, &a);
     if(sscanfed == 4 && IsRGBValue(r) && IsRGBValue(g) && IsRGBValue(b) && IsRGBValue(a))
