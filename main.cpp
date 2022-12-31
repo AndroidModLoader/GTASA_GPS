@@ -7,9 +7,10 @@
 
 #define MAX_PATH_NODES  50000
 #define STREAM_NODES    64 // def 8
-#define STREAM_RADIUS   9000.0f
+#define STREAM_RADIUS   8000.0f
 #define STREAM_RADIUS_LIMIT STREAM_RADIUS*1.01f
 #define MAX_NODE_POINTS 2000
+
 #define GPS_LINE_R      235
 #define GPS_LINE_G      212
 #define GPS_LINE_B      0
@@ -49,7 +50,7 @@ ConfigEntry* pCfgGPSDrawDistance;
 ConfigEntry* pCfgGPSDrawDistancePosition;
 ConfigEntry* pCfgGPSDrawDistanceTextScale;
 ConfigEntry* pCfgGPSDrawDistanceTextOffset;
-bool bAllowBMX;
+bool bAllowBMX, bAllowBoat;
 
 // Game Vars
 RsGlobalType* RsGlobal;
@@ -76,6 +77,10 @@ void (*RwRenderStateSet)(RwRenderState, void*);
 void (*RwIm2DRenderPrimitive)(RwPrimitiveType, RwOpenGLVertex*, int);
 void (*SetScissorRect)(CRect&);
 void (*ClearRadarBlip)(uint32_t);
+bool (*IsOnAMission)();
+CPed* (*GetPoolPed)(int);
+CVehicle* (*GetPoolVeh)(int);
+CObject* (*GetPoolObj)(int);
 
 void (*FontSetOrientation)(unsigned char);
 void (*FontSetColor)(CRGBA*);
@@ -90,6 +95,7 @@ void (*FontSetDropColor)(CRGBA*);
 void (*FontPrintString)(float, float, unsigned short*);
 void (*AsciiToGxtChar)(const char* txt, unsigned short* ret);
 void (*RenderFontBuffer)(void);
+
 
 
 inline bool IsRadarVisible()
@@ -111,6 +117,35 @@ void InitializeConfigValues()
     }
 }
 
+RwUInt32 GetTraceColor(eBlipColour clr, bool friendly = false)
+{
+    switch(clr)
+    {
+        case BLIP_COLOUR_RED:
+            return RWRGBALONG(127,0,0,255);
+        case BLIP_COLOUR_GREEN:
+            return RWRGBALONG(0,127,0,255);
+        case BLIP_COLOUR_BLUE:
+            return RWRGBALONG(0,0,127,255);
+        case BLIP_COLOUR_WHITE:
+            return RWRGBALONG(127,127,127,255);
+        case BLIP_COLOUR_YELLOW:
+            return RWRGBALONG(200,200,0,255);
+        case BLIP_COLOUR_PURPLE:
+            return RWRGBALONG(127,0,127,255);
+        case BLIP_COLOUR_CYAN:
+            return RWRGBALONG(0,127,127,255);
+        case BLIP_COLOUR_THREAT:
+            return friendly ? RWRGBALONG(0,0,127,255) : RWRGBALONG(127,0,0,255);
+        case BLIP_COLOUR_DESTINATION:
+            return RWRGBALONG(200,200,0,255);
+            
+        default:
+            CRGBA a((int)clr);
+            return RWRGBALONG(a.r, a.g, a.b, 255);
+    }
+}
+
 void SetDistanceTextValues()
 {
     CVector2D posn;
@@ -123,6 +158,7 @@ void SetDistanceTextValues()
             
     switch(pCfgGPSDrawDistancePosition->GetInt())
     {
+        default:
         case 0: // Under
             g_nTextAlignment = ALIGN_CENTER;
             TransformRadarPointToScreenSpace(gpsDistanceTextPos, g_vecUnderRadar);
@@ -150,6 +186,10 @@ void SetDistanceTextValues()
             gpsDistanceTextPos += vecTextOffset;
             gpsDistanceTextPos.x += textOffset;
             break;
+            
+        case 4: // Custom
+            gpsDistanceTextPos = vecTextOffset;
+            break;
     }
 }
 
@@ -165,22 +205,28 @@ inline void Setup2DVertex(RwOpenGLVertex &vertex, float x, float y, RwUInt32 col
 
 inline bool IsBMXNaviAllowed(CPlayerPed* player)
 {
-    return bAllowBMX || (!bAllowBMX && player->m_pVehicle->m_nVehicleSubType != VEHICLE_TYPE_BMX);
+    return bAllowBMX ||
+           (!bAllowBMX && player->m_pVehicle->m_nVehicleSubType != VEHICLE_TYPE_BMX);
 }
 
 inline bool IsInSupportedVehicle(CPlayerPed* player)
 {
     return (player && 
-       player->m_pVehicle &&
-       player->m_PedFlags.bInVehicle &&
-       player->m_pVehicle->m_nVehicleSubType != VEHICLE_TYPE_PLANE &&
-       player->m_pVehicle->m_nVehicleSubType != VEHICLE_TYPE_HELI &&
-       IsBMXNaviAllowed(player));
+            player->m_pVehicle &&
+            player->m_PedFlags.bInVehicle &&
+            player->m_pVehicle->m_nVehicleSubType != VEHICLE_TYPE_PLANE &&
+            player->m_pVehicle->m_nVehicleSubType != VEHICLE_TYPE_HELI &&
+            IsBMXNaviAllowed(player));
 }
 
 inline bool LaneDirectionRespected()
 {
-    return true;
+    return false;
+}
+
+inline bool IsBoatNaviAllowed()
+{
+    return bAllowBoat;
 }
 
 char text[24];
@@ -196,7 +242,8 @@ DECL_HOOK(void, PreRenderEnd, void* self)
         AsciiToGxtChar(text, textGxt);
 
         FontSetOrientation(g_nTextAlignment);
-        FontSetColor((CRGBA*)&rgbaWhite);
+        if(!TargetBlip.m_nHandleIndex) FontSetColor((CRGBA*)&rgbaOrange);
+        else FontSetColor((CRGBA*)&rgbaWhite);
         FontSetBackground(false, false);
         FontSetWrapx(500.0f);
         FontSetScale(textScale);
@@ -206,6 +253,7 @@ DECL_HOOK(void, PreRenderEnd, void* self)
         FontPrintString(gpsDistanceTextPos.x, gpsDistanceTextPos.y, textGxt);
         RenderFontBuffer();
     }
+    gpsDistance = 0;
 }
 
 DECL_HOOKv(InitRenderWare)
@@ -214,86 +262,88 @@ DECL_HOOKv(InitRenderWare)
     InitializeConfigValues();
 }
 
-void DoPathDraw(CVector to, RwUInt32 color, bool isTargetBlip, float* dist = NULL)
+void DoPathDraw(CVector to, RwUInt32 color, bool isTargetBlip = false, float* dist = NULL)
 {
     CPlayerPed* player = FindPlayerPed(-1);
     if(!IsInSupportedVehicle(player)) return;
     
     short nodesCount = 0;
     float trashVar;
-    bool isGamePaused = IsGamePaused();
+    bool isGamePaused = IsGamePaused(), bScissors = !isGamePaused || !gMobileMenu->m_bDrawMenuMap;
     
-    DoPathSearch((uintptr_t)ThePaths, LaneDirectionRespected() && player->m_pVehicle->m_nVehicleSubType == VEHICLE_TYPE_BOAT, player->GetPosition(), CNodeAddress(), to, resultNodes, &nodesCount, MAX_NODE_POINTS, dist ? dist : &trashVar, 1000000.0f, NULL, 1000000.0f, false, CNodeAddress(), false, player->m_pVehicle->m_nVehicleSubType == VEHICLE_TYPE_BOAT);
+    DoPathSearch((uintptr_t)ThePaths, LaneDirectionRespected() && player->m_pVehicle->m_nVehicleSubType != VEHICLE_TYPE_BOAT, player->GetPosition(), 
+                 CNodeAddress(), to, resultNodes, &nodesCount, MAX_NODE_POINTS, dist ? dist : &trashVar, 1000000.0f, NULL, 1000000.0f, false,
+                 CNodeAddress(), false, player->m_pVehicle->m_nVehicleSubType == VEHICLE_TYPE_BOAT && IsBoatNaviAllowed());
 
-        if(nodesCount > 0)
+    if(nodesCount > 0)
+    {
+        if(isTargetBlip && bScissors &&
+           gpsDistance < pCfgClosestMaxGPSDistance->GetFloat())
         {
-            if(isTargetBlip && (!isGamePaused || !gMobileMenu->m_bDrawMenuMap) &&
-               gpsDistance < pCfgClosestMaxGPSDistance->GetFloat())
+            ClearRadarBlip(TargetBlip.m_nHandleIndex);
+            gMobileMenu->m_TargetBlipHandle.m_nHandleIndex = 0;
+            TargetBlip.m_nHandleIndex = 0;
+            return;
+        }
+        for (short i = 0; i < nodesCount; ++i)
+        {
+            CPathNode* node = (CPathNode*)(ThePaths[513 + resultNodes[i].m_nAreaId] + 28 * resultNodes[i].m_nNodeId);
+            CVector2D nodePos = node->GetPosition2D();
+            TransformRealWorldPointToRadarSpace(nodePos, nodePos);
+            if (!isGamePaused)
             {
-                ClearRadarBlip(TargetBlip.m_nHandleIndex);
-                gMobileMenu->m_TargetBlipHandle.m_nHandleIndex = 0;
-                TargetBlip.m_nHandleIndex = 0;
-                return;
+                TransformRadarPointToScreenSpace(nodePoints[i], nodePos);
             }
-            for (short i = 0; i < nodesCount; ++i)
+            else
             {
-                CPathNode* node = (CPathNode*)(ThePaths[513 + resultNodes[i].m_nAreaId] + 28 * resultNodes[i].m_nNodeId);
-                CVector2D nodePos = node->GetPosition2D();
-                TransformRealWorldPointToRadarSpace(nodePos, nodePos);
+                LimitRadarPoint(nodePos);
+                TransformRadarPointToScreenSpace(nodePoints[i], nodePos);
+                nodePoints[i].x *= flMenuMapScaling;
+                nodePoints[i].y *= flMenuMapScaling;
+            }
+        }
+
+        if(IsRadarVisible() || isGamePaused)
+        {
+            if (bScissors) SetScissorRect(radarRect); // Scissor
+            RwRenderStateSet(rwRENDERSTATETEXTURERASTER, NULL);
+
+            unsigned int vertIndex = 0;
+            --nodesCount;
+            for (short i = 0; i < nodesCount; i++)
+            {
+                CVector2D point[4], shift[2];
+                CVector2D dir = CVector2D::Diff(nodePoints[i + 1], nodePoints[i]);
+                float angle = atan2(dir.y, dir.x);
                 if (!isGamePaused)
                 {
-                    TransformRadarPointToScreenSpace(nodePoints[i], nodePos);
+                    shift[0].x = cosf(angle - 1.5707963f) * lineWidth;
+                    shift[0].y = sinf(angle - 1.5707963f) * lineWidth;
+                    shift[1].x = cosf(angle + 1.5707963f) * lineWidth;
+                    shift[1].y = sinf(angle + 1.5707963f) * lineWidth;
                 }
                 else
                 {
-                    LimitRadarPoint(nodePos);
-                    TransformRadarPointToScreenSpace(nodePoints[i], nodePos);
-                    nodePoints[i].x *= flMenuMapScaling;
-                    nodePoints[i].y *= flMenuMapScaling;
+                    float mp = gMobileMenu->m_fMapZoom - 140.0f;
+                    if (mp < 140.0f) mp = 140.0f;
+                    else if (mp > 960.0f) mp = 960.0f;
+                    mp = mp / 960.0f + 0.4f;
+
+                    shift[0].x = cosf(angle - 1.5707963f) * lineWidth * mp;
+                    shift[0].y = sinf(angle - 1.5707963f) * lineWidth * mp;
+                    shift[1].x = cosf(angle + 1.5707963f) * lineWidth * mp;
+                    shift[1].y = sinf(angle + 1.5707963f) * lineWidth * mp;
                 }
+                Setup2DVertex(lineVerts[vertIndex], nodePoints[i].x + shift[0].x, nodePoints[i].y + shift[0].y, color);
+                Setup2DVertex(lineVerts[++vertIndex], nodePoints[i + 1].x + shift[0].x, nodePoints[i + 1].y + shift[0].y, color);
+                Setup2DVertex(lineVerts[++vertIndex], nodePoints[i].x + shift[1].x, nodePoints[i].y + shift[1].y, color);
+                Setup2DVertex(lineVerts[++vertIndex], nodePoints[i + 1].x + shift[1].x, nodePoints[i + 1].y + shift[1].y, color);
+                ++vertIndex;
             }
-
-            if(IsRadarVisible() || isGamePaused)
-            {
-                if (!isGamePaused || !gMobileMenu->m_bDrawMenuMap) SetScissorRect(radarRect); // Scissor
-                RwRenderStateSet(rwRENDERSTATETEXTURERASTER, NULL);
-
-                unsigned int vertIndex = 0;
-                --nodesCount;
-                for (short i = 0; i < nodesCount; i++)
-                {
-                    CVector2D point[4], shift[2];
-                    CVector2D dir = CVector2D::Diff(nodePoints[i + 1], nodePoints[i]);
-                    float angle = atan2(dir.y, dir.x);
-                    if (!isGamePaused)
-                    {
-                        shift[0].x = cosf(angle - 1.5707963f) * lineWidth;
-                        shift[0].y = sinf(angle - 1.5707963f) * lineWidth;
-                        shift[1].x = cosf(angle + 1.5707963f) * lineWidth;
-                        shift[1].y = sinf(angle + 1.5707963f) * lineWidth;
-                    }
-                    else
-                    {
-                        float mp = gMobileMenu->m_fMapZoom - 140.0f;
-                        if (mp < 140.0f) mp = 140.0f;
-                        else if (mp > 960.0f) mp = 960.0f;
-                        mp = mp / 960.0f + 0.4f;
-
-                        shift[0].x = cosf(angle - 1.5707963f) * lineWidth * mp;
-                        shift[0].y = sinf(angle - 1.5707963f) * lineWidth * mp;
-                        shift[1].x = cosf(angle + 1.5707963f) * lineWidth * mp;
-                        shift[1].y = sinf(angle + 1.5707963f) * lineWidth * mp;
-                    }
-                    Setup2DVertex(lineVerts[vertIndex], nodePoints[i].x + shift[0].x, nodePoints[i].y + shift[0].y, color);
-                    Setup2DVertex(lineVerts[++vertIndex], nodePoints[i + 1].x + shift[0].x, nodePoints[i + 1].y + shift[0].y, color);
-                    Setup2DVertex(lineVerts[++vertIndex], nodePoints[i].x + shift[1].x, nodePoints[i].y + shift[1].y, color);
-                    Setup2DVertex(lineVerts[++vertIndex], nodePoints[i + 1].x + shift[1].x, nodePoints[i + 1].y + shift[1].y, color);
-                    ++vertIndex;
-                }
-                RwIm2DRenderPrimitive(rwPRIMTYPETRISTRIP, lineVerts, 4 * nodesCount);
-                if (!isGamePaused || !gMobileMenu->m_bDrawMenuMap) SetScissorRect(emptyRect); // Scissor
-            }
+            RwIm2DRenderPrimitive(rwPRIMTYPETRISTRIP, lineVerts, 4 * nodesCount);
+            if (bScissors) SetScissorRect(emptyRect); // Scissor
         }
+    }
 }
 
 DECL_HOOKv(PostRadarDraw, bool b)
@@ -322,14 +372,61 @@ DECL_HOOKv(PostRadarDraw, bool b)
     else
     {
         TargetBlip.m_nHandleIndex = 0;
-        gpsDistance = 0;
+    }
+        
+    if(IsOnAMission())
+    {
+        CPlayerPed* player = FindPlayerPed(-1);
+        unsigned char count = 0, maxi = 0;
+        float distances[175], maxdist;
+        tRadarTrace* traces[175];
+            
+        for(unsigned char i = 0; i < 175; ++i)
+        {
+            tRadarTrace& trace = pRadarTrace[i];
+            if(trace.m_nBlipSprite == RADAR_SPRITE_NONE &&
+               trace.m_nBlipDisplayFlag > 1)
+            {
+                traces[count] = &trace;
+                distances[count] = trace.m_nColour == BLIP_COLOUR_DESTINATION ?
+                                   FLT_MAX : DistanceBetweenPoints(player->GetPosition(), trace.m_vecWorldPosition);
+                ++count;
+            }
+        }
+            
+        if(count > 0)
+        {
+            maxdist = distances[0];
+            for(unsigned char i = 1; i < count; ++i)
+            {
+                if(distances[i] > maxdist) maxi = i;
+                if(distances[i] == FLT_MAX) break;
+            }
+                
+            switch(traces[maxi]->m_nBlipType)
+            {
+                case BLIP_CAR:
+                    DoPathDraw(GetPoolVeh(traces[maxi]->m_nEntityHandle)->GetPosition(), GetTraceColor(traces[maxi]->m_nColour, traces[maxi]->m_bFriendly), false, !TargetBlip.m_nHandleIndex ? &gpsDistance : NULL);
+                    break;
+                        
+                case BLIP_CHAR:
+                    DoPathDraw(GetPoolPed(traces[maxi]->m_nEntityHandle)->GetPosition(), GetTraceColor(traces[maxi]->m_nColour, traces[maxi]->m_bFriendly), false, !TargetBlip.m_nHandleIndex ? &gpsDistance : NULL);
+                    break;
+                        
+                case BLIP_OBJECT:
+                    DoPathDraw(GetPoolObj(traces[maxi]->m_nEntityHandle)->GetPosition(), GetTraceColor(traces[maxi]->m_nColour, traces[maxi]->m_bFriendly), false, !TargetBlip.m_nHandleIndex ? &gpsDistance : NULL);
+                    break;
+                        
+                case BLIP_COORD:
+                case BLIP_CONTACT_POINT:
+                    DoPathDraw(traces[maxi]->m_vecWorldPosition, GetTraceColor(traces[maxi]->m_nColour, traces[maxi]->m_bFriendly), false, !TargetBlip.m_nHandleIndex ? &gpsDistance : NULL);
+                        
+                default:
+                    break;
+            }
+        }
     }
 }
-
-extern "C" void adadad(void) 
-{ 
-    asm volatile("MOVW R2, #0xC31E");
-} // This one is used internally for myself. Helps me to get patched values.
 
 extern "C" void OnModLoad()
 {
@@ -337,15 +434,15 @@ extern "C" void OnModLoad()
     pGTASA = aml->GetLib("libGTASA.so");
     hGTASA = dlopen("libGTASA.so", RTLD_LAZY);
 
-    pCfgClosestMaxGPSDistance = cfg->Bind("ClosestMaxGPSDistance", 30.0f);
+    pCfgClosestMaxGPSDistance = cfg->Bind("ClosestMaxGPSDistance", 50.0f);
     if(pCfgClosestMaxGPSDistance->GetFloat() < 0)
     {
         pCfgClosestMaxGPSDistance->SetFloat(0.0f);
         cfg->Save();
     }
-    else if(pCfgClosestMaxGPSDistance->GetFloat() > 128)
+    else if(pCfgClosestMaxGPSDistance->GetFloat() > 200)
     {
-        pCfgClosestMaxGPSDistance->SetFloat(128.0f);
+        pCfgClosestMaxGPSDistance->SetFloat(200.0f);
         cfg->Save();
     }
     
@@ -356,7 +453,8 @@ extern "C" void OnModLoad()
     pCfgGPSDrawDistanceTextScale = cfg->Bind("GPSDrawDistanceTextScale", 1.0f);
     pCfgGPSDrawDistanceTextOffset = cfg->Bind("GPSDrawDistanceTextOffset", "0.0 0.0");
     bAllowBMX = cfg->Bind("AllowBMX", false)->GetBool();
-
+    bAllowBoat = cfg->Bind("AllowBoatNavi", true)->GetBool();
+    
     int r, g, b, a, sscanfed = sscanf(pCfgGPSLineColorRGB->GetString(), "%d %d %d %d", &r, &g, &b, &a);
     if(sscanfed == 4 && IsRGBValue(r) && IsRGBValue(g) && IsRGBValue(b) && IsRGBValue(a))
     {
@@ -406,6 +504,10 @@ extern "C" void OnModLoad()
     SET_TO(FontPrintString,                     aml->GetSym(hGTASA, "_ZN5CFont11PrintStringEffPt"));
     SET_TO(AsciiToGxtChar,                      aml->GetSym(hGTASA, "_Z14AsciiToGxtCharPKcPt"));
     SET_TO(RenderFontBuffer,                    aml->GetSym(hGTASA, "_ZN5CFont16RenderFontBufferEv"));
+    SET_TO(IsOnAMission,                        aml->GetSym(hGTASA, "_ZN11CTheScripts18IsPlayerOnAMissionEv"));
+    SET_TO(GetPoolPed,                          aml->GetSym(hGTASA, "_ZN6CPools6GetPedEi"));
+    SET_TO(GetPoolVeh,                          aml->GetSym(hGTASA, "_ZN6CPools10GetVehicleEi"));
+    SET_TO(GetPoolObj,                          aml->GetSym(hGTASA, "_ZN6CPools9GetObjectEi"));
 
     HOOKPLT(PreRenderEnd,                       pGTASA + 0x674188);
     HOOKPLT(InitRenderWare,                     pGTASA + 0x66F2D0);
