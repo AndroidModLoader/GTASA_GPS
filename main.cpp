@@ -523,6 +523,12 @@ extern "C" void OnModLoad()
         pCfgGPSLineColorRGB->SetString(STRINGIFY(GPS_LINE_R)" " STRINGIFY(GPS_LINE_G)" " STRINGIFY(GPS_LINE_B)" " STRINGIFY(GPS_LINE_A));
         cfg->Save();
     }
+    
+    cfg->Bind("Author", "", "About")->SetString("[-=KILL MAN=-]");
+    cfg->Bind("IdeasFrom", "", "About")->SetString("DK22Pac, JuniorDjjr, juicermv");
+    cfg->Bind("Discord", "", "About")->SetString("https://discord.gg/2MY7W39kBg");
+    cfg->Bind("GitHub", "", "About")->SetString("https://github.com/AndroidModLoader/GTASA_GPS");
+    cfg->Save();
 
     SET_TO(ThePaths,                            aml->GetSym(hGTASA, "ThePaths"));
     SET_TO(gMobileMenu,                         aml->GetSym(hGTASA, "gMobileMenu"));
