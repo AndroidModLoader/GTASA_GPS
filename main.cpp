@@ -51,7 +51,7 @@ ConfigEntry* pCfgGPSDrawDistance;
 ConfigEntry* pCfgGPSDrawDistancePosition;
 ConfigEntry* pCfgGPSDrawDistanceTextScale;
 ConfigEntry* pCfgGPSDrawDistanceTextOffset;
-bool bAllowBMX, bAllowBoat, bAllowMission;
+bool bAllowBMX, bAllowBoat, bAllowMission, bImperialUnits;
 
 // Game Vars
 RsGlobalType* RsGlobal;
@@ -276,9 +276,18 @@ DECL_HOOK(void, PreRenderEnd, void* self)
             SetDistanceTextValues();
         }
         
-        if(gpsDistance == 100000.0f) sprintf(text, "Far from the road!");
-        else if (gpsDistance >= 1000.0f) sprintf(text, "%.2fkm", 0.001f * gpsDistance);
-        else sprintf(text, "%dm", (int)gpsDistance);
+        if(!bImperialUnits)
+        {
+            if(gpsDistance == 100000.0f) sprintf(text, "Far from the road!");
+            else if (gpsDistance >= 1000.0f) sprintf(text, "%.2fkm", 0.001f * gpsDistance);
+            else sprintf(text, "%dm", (int)gpsDistance);
+        }
+        else
+        {
+            if(gpsDistance == 100000.0f) sprintf(text, "Far from the road!");
+            else if (gpsDistance > 1609.344f) sprintf(text, "%.2fmil", 0.000621371192237334f * gpsDistance);
+            else sprintf(text, "%dyrd", (int)(gpsDistance * 1.094f));
+        }
         AsciiToGxtChar(text, textGxt);
 
         FontSetOrientation(g_nTextAlignment);
@@ -497,6 +506,8 @@ extern "C" void OnModLoad()
     bAllowBMX = cfg->Bind("AllowBMX", false)->GetBool();
     bAllowBoat = cfg->Bind("AllowBoatNavi", true)->GetBool();
     bAllowMission = cfg->Bind("MissionRoutes", true)->GetBool();
+    // People need this. https://github.com/juicermv/GTA-GPS-Redux/issues/13
+    bImperialUnits = cfg->Bind("UseImperialUnits", false)->GetBool();
     
     int r, g, b, a, sscanfed = sscanf(pCfgGPSLineColorRGB->GetString(), "%d %d %d %d", &r, &g, &b, &a);
     if(sscanfed == 4 && IsRGBValue(r) && IsRGBValue(g) && IsRGBValue(b) && IsRGBValue(a))
