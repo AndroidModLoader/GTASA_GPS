@@ -16,7 +16,7 @@
 #define GPS_LINE_B      0
 #define GPS_LINE_A      255
 
-MYMODCFG(net.dk22pac.rusjj.gps, GTA:SA GPS, 1.2, DK22Pac & juicermv & RusJJ)
+MYMODCFG(net.dk22pac.rusjj.gps, GTA:SA GPS, 1.2.1, DK22Pac & juicermv & RusJJ)
 NEEDGAME(com.rockstargames.gtasa)
 
 CVector2D g_vecUnderRadar(0.0, -1.05); // 0
@@ -291,7 +291,7 @@ DECL_HOOK(void, PreRenderEnd, void* self)
         AsciiToGxtChar(text, textGxt);
 
         FontSetOrientation(g_nTextAlignment);
-        if(!TargetBlip.m_nHandleIndex) FontSetColor((CRGBA*)&GetTraceTextColor(pTrace->m_nColour, pTrace->m_bFriendly));
+        if(!TargetBlip.m_nHandleIndex && pTrace) FontSetColor((CRGBA*)&GetTraceTextColor(pTrace->m_nColour, pTrace->m_bFriendly));
         else FontSetColor((CRGBA*)&rgbaWhite);
         FontSetBackground(false, false);
         FontSetWrapx(500.0f);
