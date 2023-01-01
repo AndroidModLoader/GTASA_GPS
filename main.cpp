@@ -16,7 +16,7 @@
 #define GPS_LINE_B      0
 #define GPS_LINE_A      255
 
-MYMODCFG(net.dk22pac.rusjj.gps, GTA:SA GPS, 1.2.1, DK22Pac & juicermv & RusJJ)
+MYMODCFG(net.dk22pac.rusjj.gps, GTA:SA GPS, 1.2.2, DK22Pac & JuniorDjjr & juicermv & RusJJ)
 NEEDGAME(com.rockstargames.gtasa)
 
 CVector2D g_vecUnderRadar(0.0, -1.05); // 0
@@ -416,6 +416,7 @@ DECL_HOOKv(PostRadarDraw, bool b)
         TargetBlip.m_nHandleIndex = 0;
     }
         
+    pTrace = NULL;
     if(bAllowMission && IsOnAMission())
     {
         CPlayerPed* player = FindPlayerPed(-1);
@@ -429,9 +430,13 @@ DECL_HOOKv(PostRadarDraw, bool b)
             if(trace.m_nBlipSprite == RADAR_SPRITE_NONE &&
                trace.m_nBlipDisplayFlag > 1)
             {
+                if(trace.m_nColour == BLIP_COLOUR_DESTINATION)
+                {
+                    pTrace = &trace;
+                    break;
+                }
                 traces[count] = &trace;
-                distances[count] = trace.m_nColour == BLIP_COLOUR_DESTINATION ?
-                                   FLT_MAX : DistanceBetweenPoints(player->GetPosition(), trace.m_vecWorldPosition);
+                distances[count] = DistanceBetweenPoints(player->GetPosition(), trace.m_vecWorldPosition);
                 ++count;
             }
         }
@@ -441,11 +446,17 @@ DECL_HOOKv(PostRadarDraw, bool b)
             maxdist = distances[0];
             for(unsigned char i = 1; i < count; ++i)
             {
-                if(distances[i] > maxdist) maxi = i;
-                if(distances[i] == FLT_MAX) break;
+                if(distances[i] > maxdist)
+                {
+                    maxi = i;
+                    maxdist = distances[i];
+                }
             }
             pTrace = traces[maxi];
+        }
                 
+        if(pTrace)
+        {
             switch(pTrace->m_nBlipType)
             {
                 case BLIP_CAR:
