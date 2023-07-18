@@ -3,7 +3,13 @@
 #include <mod/config.h>
 #include <dlfcn.h>
 
-#include <GTASA_STRUCTS.h>
+#ifdef AML32
+    #include "GTASA_STRUCTS.h"
+    #define BYVER(__for32, __for64) (__for32)
+#else
+    #include "GTASA_STRUCTS_210.h"
+    #define BYVER(__for32, __for64) (__for64)
+#endif
 
 #define MAX_PATH_NODES  50000
 #define STREAM_NODES    64 // def 8
@@ -16,7 +22,7 @@
 #define GPS_LINE_B      0
 #define GPS_LINE_A      255
 
-MYMODCFG(net.dk22pac.rusjj.gps, GTA:SA GPS, 1.2.2, DK22Pac & JuniorDjjr & juicermv & RusJJ)
+MYMODCFG(net.dk22pac.rusjj.gps, GTA:SA GPS, 1.3, DK22Pac & JuniorDjjr & juicermv & RusJJ)
 NEEDGAME(com.rockstargames.gtasa)
 
 CVector2D g_vecUnderRadar(0.0, -1.05); // 0
@@ -57,7 +63,7 @@ bool bAllowBMX, bAllowBoat, bAllowMission, bImperialUnits;
 RsGlobalType* RsGlobal;
 tRadarTrace* pRadarTrace;
 MobileMenu* gMobileMenu;
-int* ThePaths;
+CPathFind* ThePaths;
 ScriptHandle TargetBlip {0};
 float* NearScreenZ;
 float* RecipNearClip;
@@ -69,7 +75,7 @@ CPickup* aPickUps;
 CPlayerPed* (*FindPlayerPed)(int);
 CVector& (*FindPlayerCoors)(CVector*, int);
 float (*FindGroundZForCoord)(float, float);
-int (*DoPathSearch)(uintptr_t, unsigned char, CVector, CNodeAddress, CVector, CNodeAddress*, short*, int, float*, float, CNodeAddress*, float, bool, CNodeAddress, bool, bool);
+int (*DoPathSearch)(CPathFind*, unsigned char, CVector, CNodeAddress, CVector, CNodeAddress*, short*, int, float*, float, CNodeAddress*, float, bool, CNodeAddress, bool, bool);
 void (*TransformRadarPointToRealWorldSpace)(CVector2D& out, CVector2D const& in);
 void (*TransformRealWorldPointToRadarSpace)(CVector2D& out, CVector2D const& in);
 void (*TransformRadarPointToScreenSpace)(CVector2D& out, CVector2D const& in);
@@ -230,7 +236,6 @@ inline void Setup2DVertex(RwOpenGLVertex &vertex, float x, float y, RwUInt32 col
 {
     vertex.pos.x = x;
     vertex.pos.y = y;
-    //vertex.texCoord.u = vertex.texCoord.v = 0.0f;
     vertex.pos.z = *NearScreenZ + 0.0001f;
     vertex.rhw = *RecipNearClip;
     vertex.color = color;
@@ -320,7 +325,7 @@ void DoPathDraw(CVector to, RwUInt32 color, bool isTargetBlip = false, float* di
     float trashVar;
     bool isGamePaused = IsGamePaused(), bScissors = !isGamePaused || !gMobileMenu->m_bDrawMenuMap;
     
-    DoPathSearch((uintptr_t)ThePaths, LaneDirectionRespected() && player->m_pVehicle->m_nVehicleSubType != VEHICLE_TYPE_BOAT, player->GetPosition(), 
+    DoPathSearch(ThePaths, LaneDirectionRespected() && player->m_pVehicle->m_nVehicleSubType != VEHICLE_TYPE_BOAT, player->GetPosition(), 
                  CNodeAddress(), to, resultNodes, &nodesCount, MAX_NODE_POINTS, dist ? dist : &trashVar, 1000000.0f, NULL, 1000000.0f, false,
                  CNodeAddress(), false, player->m_pVehicle->m_nVehicleSubType == VEHICLE_TYPE_BOAT && IsBoatNaviAllowed());
 
@@ -336,7 +341,7 @@ void DoPathDraw(CVector to, RwUInt32 color, bool isTargetBlip = false, float* di
         }
         for (short i = 0; i < nodesCount; ++i)
         {
-            CPathNode* node = (CPathNode*)(ThePaths[513 + resultNodes[i].m_nAreaId] + 28 * resultNodes[i].m_nNodeId);
+            CPathNode* node = &ThePaths->pNodes[resultNodes[i].m_nAreaId][resultNodes[i].m_nNodeId];
             CVector2D nodePos = node->GetPosition2D();
             TransformRealWorldPointToRadarSpace(nodePos, nodePos);
             if (!isGamePaused)
@@ -535,10 +540,10 @@ extern "C" void OnModLoad()
         cfg->Save();
     }
     
-    cfg->Bind("Author", "", "About")->SetString("[-=KILL MAN=-]");
-    cfg->Bind("IdeasFrom", "", "About")->SetString("DK22Pac, JuniorDjjr, juicermv");
-    cfg->Bind("Discord", "", "About")->SetString("https://discord.gg/2MY7W39kBg");
-    cfg->Bind("GitHub", "", "About")->SetString("https://github.com/AndroidModLoader/GTASA_GPS");
+    cfg->Bind("Author", "", "About")->SetString("[-=KILL MAN=-]"); cfg->ClearLast();
+    cfg->Bind("IdeasFrom", "", "About")->SetString("DK22Pac, JuniorDjjr, juicermv"); cfg->ClearLast();
+    cfg->Bind("Discord", "", "About")->SetString("https://discord.gg/2MY7W39kBg"); cfg->ClearLast();
+    cfg->Bind("GitHub", "", "About")->SetString("https://github.com/AndroidModLoader/GTASA_GPS"); cfg->ClearLast();
     cfg->Save();
 
     SET_TO(ThePaths,                            aml->GetSym(hGTASA, "ThePaths"));
@@ -580,26 +585,28 @@ extern "C" void OnModLoad()
     SET_TO(GetPoolVeh,                          aml->GetSym(hGTASA, "_ZN6CPools10GetVehicleEi"));
     SET_TO(GetPoolObj,                          aml->GetSym(hGTASA, "_ZN6CPools9GetObjectEi"));
 
-    HOOKPLT(PreRenderEnd,                       pGTASA + 0x674188);
-    HOOKPLT(InitRenderWare,                     pGTASA + 0x66F2D0);
+    HOOKPLT(PreRenderEnd,                       pGTASA + BYVER(0x674188, 0x846E90));
+    HOOKPLT(InitRenderWare,                     pGTASA + BYVER(0x66F2D0, 0x8432F0));
     HOOK(PostRadarDraw,                         aml->GetSym(hGTASA, "_ZN6CRadar20DrawRadarGangOverlayEb"));
-    SET_TO(aWidgets,                            *(void**)(pGTASA + 0x67947C));
+    SET_TO(aWidgets,                            *(void**)(pGTASA + BYVER(0x67947C, 0x850910)));
     SET_TO(aPickUps,                            aml->GetSym(hGTASA, "_ZN8CPickups8aPickUpsE"));
-    
+
     // Patches
     // CPathFind::DoPathSearch, 0x315B06
-    aml->Write(pGTASA + 0x315B06, (uintptr_t)"\x4C\xF2\x50\x32", 4); // 4999 -> 50000
-    aml->Write(pGTASA + 0x315BC4, (uintptr_t)"\x4C\xF2\x1E\x32", 4); // 4950 -> 49950
+    aml->Write(pGTASA + BYVER(0x315B06, 0x3DBE58), (uintptr_t)BYVER("\x4C\xF2\x50\x32", "\x12\x6A\x98\x52"), 4); // 4999 -> 50000
+    aml->Write(pGTASA + BYVER(0x315BC4, 0x3DBE48), (uintptr_t)BYVER("\x4C\xF2\x1E\x32", "\xCE\x63\x98\x52"), 4); // 4950 -> 49950
+    aml->Unprot(pGTASA + BYVER(0x67899C, 0x84F358), sizeof(void*)); *(uintptr_t*)(pGTASA + BYVER(0x67899C, 0x84F358)) = (uintptr_t)aStreamablePathNodes;
+
+    #ifdef AML32
     aml->Unprot(pGTASA + 0x315D30, sizeof(void*)); *(uintptr_t*)(pGTASA + 0x315D30) = (uintptr_t)aPathNodes - 0x31598A - pGTASA;
     aml->Unprot(pGTASA + 0x315D34, sizeof(void*)); *(uintptr_t*)(pGTASA + 0x315D34) = (uintptr_t)aPathNodes - 0x315BE2 - pGTASA;
     aml->Unprot(pGTASA + 0x315D38, sizeof(void*)); *(uintptr_t*)(pGTASA + 0x315D38) = (uintptr_t)aPathNodes - 0x315D08 - pGTASA;
     aml->Unprot(pGTASA + 0x315D3C, sizeof(void*)); *(uintptr_t*)(pGTASA + 0x315D3C) = (uintptr_t)aPathNodes - 0x315B20 - pGTASA;
     
-    aml->Unprot(pGTASA + 0x67899C, sizeof(void*)); *(uintptr_t*)(pGTASA + 0x67899C) = (uintptr_t)aStreamablePathNodes;
     aml->Unprot(pGTASA + 0x31A04C, sizeof(float)); *(float*)(pGTASA + 0x31A04C) = -STREAM_RADIUS;
     aml->Unprot(pGTASA + 0x31A050, sizeof(float)); *(float*)(pGTASA + 0x31A050) = STREAM_RADIUS;
     aml->Unprot(pGTASA + 0x31A054, sizeof(float)); *(float*)(pGTASA + 0x31A054) = STREAM_RADIUS_LIMIT;
-    aml->Unprot(pGTASA + 0x31A058, sizeof(float)); *(float*)(pGTASA + 0x31A058) = 750.0f;
+    aml->Unprot(pGTASA + 0x31A058, sizeof(float)); *(float*)(pGTASA + 0x31A058) = 750.0f; // 3E0B04 on ARMv8
     
     aml->Unprot(pGTASA + 0x319E6C + 0x2, sizeof(char)); *(unsigned char*)(pGTASA + 0x319E6C + 0x2) = STREAM_NODES-1;
     aml->Unprot(pGTASA + 0x319EC2 + 0x0, sizeof(char)); *(unsigned char*)(pGTASA + 0x319EC2 + 0x0) = STREAM_NODES-1;
@@ -615,4 +622,7 @@ extern "C" void OnModLoad()
     aml->Unprot(pGTASA + 0x3199AC, sizeof(float)); *(float*)(pGTASA + 0x3199AC) = STREAM_RADIUS;
     aml->Unprot(pGTASA + 0x3199B0, sizeof(float)); *(float*)(pGTASA + 0x3199B0) = STREAM_RADIUS_LIMIT;
     aml->Unprot(pGTASA + 0x3199B4, sizeof(float)); *(float*)(pGTASA + 0x3199B4) = 750.0f;
+    #else
+
+    #endif
 }
