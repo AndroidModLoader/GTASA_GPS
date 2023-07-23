@@ -1,7 +1,6 @@
 #include <mod/amlmod.h>
 #include <mod/logger.h>
 #include <mod/config.h>
-#include <dlfcn.h>
 
 #ifdef AML32
     #include "GTASA_STRUCTS.h"
@@ -23,7 +22,7 @@
 #define GPS_LINE_B          0
 #define GPS_LINE_A          255
 
-MYMODCFG(net.dk22pac.rusjj.gps, GTA:SA GPS, 1.3, DK22Pac & JuniorDjjr & juicermv & RusJJ)
+MYMODCFG(net.dk22pac.rusjj.gps, GTA:SA GPS, 1.3.1, DK22Pac & JuniorDjjr & juicermv & RusJJ)
 NEEDGAME(com.rockstargames.gtasa)
 
 CVector2D g_vecUnderRadar(0.0, -1.05); // 0
@@ -722,7 +721,7 @@ extern "C" void OnModLoad()
 
     aml->PlaceNOP(pGTASA + 0x3DBE1C, 1);
     aml->PlaceNOP(pGTASA + 0x3DBE60, 1);
-    DoPathFind_BackTo1 = pGTASA + 0x3DBE40; aml->Redirect(pGTASA + 0x3DBE34, (uintptr_t)DoPathFind_Inject1);
+    DoPathFind_BackTo1 = pGTASA + 0x3DBE44; aml->Redirect(pGTASA + 0x3DBE34, (uintptr_t)DoPathFind_Inject1);
     DoPathFind_BackTo2 = pGTASA + 0x3DC0C0; aml->Redirect(pGTASA + 0x3DC0B0, (uintptr_t)DoPathFind_Inject2);
     DoPathFind_BackTo3 = pGTASA + 0x3DC248; aml->Redirect(pGTASA + 0x3DC238, (uintptr_t)DoPathFind_Inject3);
     #endif
