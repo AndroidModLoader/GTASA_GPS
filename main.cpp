@@ -4,25 +4,27 @@
 
 #ifdef AML32
     #include "GTASA_STRUCTS.h"
+    #include "AArch64_ModHelper/Thumbv7_ASMHelper.h"
+    using namespace ThumbV7;
     #define BYVER(__for32, __for64) (__for32)
 #else
     #include "GTASA_STRUCTS_210.h"
     #include "AArch64_ModHelper/ARMv8_ASMHelper.h"
+    using namespace ARMv8;
     #define BYVER(__for32, __for64) (__for64)
 #endif
 
-#define MAX_PATH_NODES      50000
 #define TOBESTREAM_NODES    128 // def 8
 #define STREAM_RADIUS       8000.0f
 #define STREAM_RADIUS_LIMIT STREAM_RADIUS*1.01f
-#define MAX_NODE_POINTS     10000
+#define MAX_NODE_POINTS     65536
 
 #define GPS_LINE_R          235
 #define GPS_LINE_G          212
 #define GPS_LINE_B          0
 #define GPS_LINE_A          255
 
-MYMODCFG(net.dk22pac.rusjj.gps, GTA:SA GPS, 1.3.1, DK22Pac & JuniorDjjr & juicermv & RusJJ)
+MYMODCFG(net.dk22pac.rusjj.gps, GTA:SA GPS, 1.3.2, DK22Pac & JuniorDjjr & juicermv & RusJJ)
 NEEDGAME(com.rockstargames.gtasa)
 
 CVector2D g_vecUnderRadar(0.0, -1.05); // 0
@@ -32,7 +34,7 @@ CVector2D g_vecRightRadar(1.05, 0.0); // 3
 eFontAlignment g_nTextAlignment;
 
 // Patched
-CNodeAddress aPathNodes[MAX_PATH_NODES];
+CNodeAddress* aPathNodes;
 uint8_t aStreamablePathNodes[8 * TOBESTREAM_NODES];
 
 // Savings
@@ -45,14 +47,15 @@ float gpsDistance;
 CVector2D gpsDistanceTextPos;
 CRect emptyRect, radarRect;
 unsigned int gpsLineColor = RWRGBALONG(GPS_LINE_R, GPS_LINE_G, GPS_LINE_B, GPS_LINE_A);
+unsigned int maxLoadedPathNodes;
 float lineWidth = 3.5f, textOffset, textScale, flMenuMapScaling;
 CVector2D vecTextOffset;
 tRadarTrace* pTrace;
 
 // Config
 ConfigEntry* pCfgClosestMaxGPSDistance;
+ConfigEntry* pCfgGPSMaxPathNodesLoaded;
 ConfigEntry* pCfgGPSLineColorRGB;
-ConfigEntry* pCfgGPSLineWidth;
 ConfigEntry* pCfgGPSDrawDistance;
 ConfigEntry* pCfgGPSDrawDistancePosition;
 ConfigEntry* pCfgGPSDrawDistanceTextScale;
@@ -316,17 +319,17 @@ DECL_HOOKv(InitRenderWare)
     InitializeConfigValues();
 }
 
+short nodesCount = 0;
+float trashVar;
 void DoPathDraw(CVector to, RwUInt32 color, bool isTargetBlip = false, float* dist = NULL)
 {
     CPlayerPed* player = FindPlayerPed(-1);
     if(!IsInSupportedVehicle(player)) return;
     
-    short nodesCount = 0;
-    float trashVar;
-    bool isGamePaused = IsGamePaused(), bScissors = !isGamePaused || !gMobileMenu->m_bDrawMenuMap;
+    bool isGamePaused = IsGamePaused(), bScissors = (!isGamePaused || !gMobileMenu->m_bDrawMenuMap);
     
     DoPathSearch(ThePaths, LaneDirectionRespected() && player->m_pVehicle->m_nVehicleSubType != VEHICLE_TYPE_BOAT, player->GetPosition(), 
-                 CNodeAddress(), to, resultNodes, &nodesCount, MAX_NODE_POINTS, dist ? dist : &trashVar, 1000000.0f, NULL, 1000000.0f, false,
+                 CNodeAddress(), to, resultNodes, &nodesCount, maxLoadedPathNodes, dist ? dist : &trashVar, 1000000.0f, NULL, 1000000.0f, false,
                  CNodeAddress(), false, player->m_pVehicle->m_nVehicleSubType == VEHICLE_TYPE_BOAT && IsBoatNaviAllowed());
 
     if(nodesCount > 0)
@@ -339,21 +342,29 @@ void DoPathDraw(CVector to, RwUInt32 color, bool isTargetBlip = false, float* di
             TargetBlip.m_nHandleIndex = 0;
             return;
         }
-        for (short i = 0; i < nodesCount; ++i)
+
+        CPathNode* node;
+        CVector2D nodePos;
+        if (isGamePaused)
         {
-            CPathNode* node = &ThePaths->pNodes[resultNodes[i].m_nAreaId][resultNodes[i].m_nNodeId];
-            CVector2D nodePos = node->GetPosition2D();
-            TransformRealWorldPointToRadarSpace(nodePos, nodePos);
-            if (!isGamePaused)
+            for (int i = 0; i < nodesCount; ++i)
             {
-                TransformRadarPointToScreenSpace(nodePoints[i], nodePos);
-            }
-            else
-            {
+                node = &ThePaths->pNodes[resultNodes[i].m_nAreaId][resultNodes[i].m_nNodeId];
+                nodePos = node->GetPosition2D();
+                TransformRealWorldPointToRadarSpace(nodePos, nodePos);
                 LimitRadarPoint(nodePos);
                 TransformRadarPointToScreenSpace(nodePoints[i], nodePos);
-                nodePoints[i].x *= flMenuMapScaling;
-                nodePoints[i].y *= flMenuMapScaling;
+                nodePoints[i] *= flMenuMapScaling;
+            }
+        }
+        else
+        {
+            for (int i = 0; i < nodesCount; ++i)
+            {
+                node = &ThePaths->pNodes[resultNodes[i].m_nAreaId][resultNodes[i].m_nNodeId];
+                nodePos = node->GetPosition2D();
+                TransformRealWorldPointToRadarSpace(nodePos, nodePos);
+                TransformRadarPointToScreenSpace(nodePoints[i], nodePos);
             }
         }
 
@@ -364,35 +375,48 @@ void DoPathDraw(CVector to, RwUInt32 color, bool isTargetBlip = false, float* di
 
             unsigned int vertIndex = 0;
             --nodesCount;
-            for (short i = 0; i < nodesCount; i++)
-            {
-                CVector2D point[4], shift[2];
-                CVector2D dir = CVector2D::Diff(nodePoints[i + 1], nodePoints[i]);
-                float angle = atan2(dir.y, dir.x);
-                if (!isGamePaused)
-                {
-                    shift[0].x = cosf(angle - 1.5707963f) * lineWidth;
-                    shift[0].y = sinf(angle - 1.5707963f) * lineWidth;
-                    shift[1].x = cosf(angle + 1.5707963f) * lineWidth;
-                    shift[1].y = sinf(angle + 1.5707963f) * lineWidth;
-                }
-                else
-                {
-                    float mp = gMobileMenu->m_fMapZoom - 140.0f;
-                    if (mp < 140.0f) mp = 140.0f;
-                    else if (mp > 960.0f) mp = 960.0f;
-                    mp = mp / 960.0f + 0.4f;
 
-                    shift[0].x = cosf(angle - 1.5707963f) * lineWidth * mp;
-                    shift[0].y = sinf(angle - 1.5707963f) * lineWidth * mp;
-                    shift[1].x = cosf(angle + 1.5707963f) * lineWidth * mp;
-                    shift[1].y = sinf(angle + 1.5707963f) * lineWidth * mp;
+            CVector2D point[4], shift[2], dir;
+            float angle;
+            if (isGamePaused)
+            {
+                float mp = gMobileMenu->m_fMapZoom - 140.0f;
+                if (mp < 140.0f) mp = 140.0f;
+                else if (mp > 960.0f) mp = 960.0f;
+                mp = mp / 960.0f + 0.4f;
+                mp *= lineWidth;
+
+                for (int i = 0; i < nodesCount; i++)
+                {
+                    dir = CVector2D::Diff(nodePoints[i + 1], nodePoints[i]);
+                    angle = atan2(dir.y, dir.x);
+
+                    sincosf(angle - 1.5707963f, &shift[0].y, &shift[0].x); shift[0] *= mp;
+                    sincosf(angle + 1.5707963f, &shift[1].y, &shift[1].x); shift[1] *= mp;
+
+                    Setup2DVertex(lineVerts[vertIndex], nodePoints[i].x + shift[0].x, nodePoints[i].y + shift[0].y, color);
+                    Setup2DVertex(lineVerts[++vertIndex], nodePoints[i + 1].x + shift[0].x, nodePoints[i + 1].y + shift[0].y, color);
+                    Setup2DVertex(lineVerts[++vertIndex], nodePoints[i].x + shift[1].x, nodePoints[i].y + shift[1].y, color);
+                    Setup2DVertex(lineVerts[++vertIndex], nodePoints[i + 1].x + shift[1].x, nodePoints[i + 1].y + shift[1].y, color);
+                    ++vertIndex;
                 }
-                Setup2DVertex(lineVerts[vertIndex], nodePoints[i].x + shift[0].x, nodePoints[i].y + shift[0].y, color);
-                Setup2DVertex(lineVerts[++vertIndex], nodePoints[i + 1].x + shift[0].x, nodePoints[i + 1].y + shift[0].y, color);
-                Setup2DVertex(lineVerts[++vertIndex], nodePoints[i].x + shift[1].x, nodePoints[i].y + shift[1].y, color);
-                Setup2DVertex(lineVerts[++vertIndex], nodePoints[i + 1].x + shift[1].x, nodePoints[i + 1].y + shift[1].y, color);
-                ++vertIndex;
+            }
+            else
+            {
+                for (int i = 0; i < nodesCount; i++)
+                {
+                    dir = CVector2D::Diff(nodePoints[i + 1], nodePoints[i]);
+                    angle = atan2(dir.y, dir.x);
+
+                    sincosf(angle - 1.5707963f, &shift[0].y, &shift[0].x); shift[0] *= lineWidth;
+                    sincosf(angle + 1.5707963f, &shift[1].y, &shift[1].x); shift[1] *= lineWidth;
+
+                    Setup2DVertex(lineVerts[vertIndex], nodePoints[i].x + shift[0].x, nodePoints[i].y + shift[0].y, color);
+                    Setup2DVertex(lineVerts[++vertIndex], nodePoints[i + 1].x + shift[0].x, nodePoints[i + 1].y + shift[0].y, color);
+                    Setup2DVertex(lineVerts[++vertIndex], nodePoints[i].x + shift[1].x, nodePoints[i].y + shift[1].y, color);
+                    Setup2DVertex(lineVerts[++vertIndex], nodePoints[i + 1].x + shift[1].x, nodePoints[i + 1].y + shift[1].y, color);
+                    ++vertIndex;
+                }
             }
             RwIm2DRenderPrimitive(rwPRIMTYPETRISTRIP, lineVerts, 4 * nodesCount);
             if (bScissors) SetScissorRect(emptyRect); // Scissor
@@ -426,10 +450,10 @@ DECL_HOOKv(PostRadarDraw, bool b)
     {
         CPlayerPed* player = FindPlayerPed(-1);
         unsigned char count = 0, maxi = 0;
-        float distances[175], maxdist;
-        tRadarTrace* traces[175];
+        float distances[250], maxdist;
+        tRadarTrace* traces[250];
             
-        for(unsigned char i = 0; i < 175; ++i)
+        for(unsigned char i = 0; i < 250; ++i)
         {
             tRadarTrace& trace = pRadarTrace[i];
             if(trace.m_nBlipSprite == RADAR_SPRITE_NONE &&
@@ -555,27 +579,28 @@ __attribute__((optnone)) __attribute__((naked)) void DoPathFind_Inject3(void)
 
 extern "C" void OnModLoad()
 {
-    for(int i = 0; i < 8 * TOBESTREAM_NODES; ++i) aStreamablePathNodes[i] = 1;
-    for(int i = 0; i < MAX_PATH_NODES; ++i) *(uint32_t*)(&aPathNodes[i]) = 0xFFFF;
-
     logger->SetTag("GPS AML");
     pGTASA = aml->GetLib("libGTASA.so");
     hGTASA = dlopen("libGTASA.so", RTLD_LAZY);
 
     pCfgClosestMaxGPSDistance = cfg->Bind("ClosestMaxGPSDistance", 50.0f);
     pCfgClosestMaxGPSDistance->Clamp(0.0f, 200.0f);
+
+    pCfgGPSMaxPathNodesLoaded = cfg->Bind("GPSMaxPathNodesLoaded", 65000);
+    pCfgGPSMaxPathNodesLoaded->Clamp(5000, 65536);
+    maxLoadedPathNodes = pCfgGPSMaxPathNodesLoaded->GetInt();
     
     pCfgGPSLineColorRGB = cfg->Bind("GPSLineColorRGB", STRINGIFY(GPS_LINE_R)" " STRINGIFY(GPS_LINE_G)" " STRINGIFY(GPS_LINE_B)" " STRINGIFY(GPS_LINE_A));
-    pCfgGPSLineWidth = cfg->Bind("GPSLineWidth", 4.0f); lineWidth = pCfgGPSLineWidth->GetFloat();
+    lineWidth = cfg->GetFloat("GPSLineWidth", 4.0f);
     pCfgGPSDrawDistance = cfg->Bind("GPSDrawDistance", true);
     pCfgGPSDrawDistancePosition = cfg->Bind("GPSDrawDistancePos", 0); // 0 under, 1 above, 2 left, 3 right, 4 custom
     pCfgGPSDrawDistanceTextScale = cfg->Bind("GPSDrawDistanceTextScale", 1.0f);
     pCfgGPSDrawDistanceTextOffset = cfg->Bind("GPSDrawDistanceTextOffset", "0.0 0.0");
-    bAllowBMX = cfg->Bind("AllowBMX", false)->GetBool();
-    bAllowBoat = cfg->Bind("AllowBoatNavi", true)->GetBool();
-    bAllowMission = cfg->Bind("MissionRoutes", true)->GetBool();
+    bAllowBMX = cfg->GetBool("AllowBMX", false);
+    bAllowBoat = cfg->GetBool("AllowBoatNavi", true);
+    bAllowMission = cfg->GetBool("MissionRoutes", true);
     // People need this. https://github.com/juicermv/GTA-GPS-Redux/issues/13
-    bImperialUnits = cfg->Bind("UseImperialUnits", false)->GetBool();
+    bImperialUnits = cfg->GetBool("UseImperialUnits", false);
     
     int r, g, b, a, sscanfed = sscanf(pCfgGPSLineColorRGB->GetString(), "%d %d %d %d", &r, &g, &b, &a);
     if(sscanfed == 4 && IsRGBValue(r) && IsRGBValue(g) && IsRGBValue(b) && IsRGBValue(a))
@@ -597,6 +622,14 @@ extern "C" void OnModLoad()
     cfg->Bind("Discord", "", "About")->SetString("https://discord.gg/2MY7W39kBg"); cfg->ClearLast();
     cfg->Bind("GitHub", "", "About")->SetString("https://github.com/AndroidModLoader/GTASA_GPS"); cfg->ClearLast();
     cfg->Save();
+
+    // Init
+
+    for(int i = 0; i < 8 * TOBESTREAM_NODES; ++i) aStreamablePathNodes[i] = 1;
+    aPathNodes = new CNodeAddress[maxLoadedPathNodes];
+    for(int i = 0; i < maxLoadedPathNodes; ++i) *(uint32_t*)(&aPathNodes[i]) = 0xFFFF;
+
+    // Hooks
 
     SET_TO(ThePaths,                            aml->GetSym(hGTASA, "ThePaths"));
     SET_TO(gMobileMenu,                         aml->GetSym(hGTASA, "gMobileMenu"));
@@ -645,8 +678,8 @@ extern "C" void OnModLoad()
 
     // Patches
 
-    aml->Write(pGTASA + BYVER(0x315B06, 0x3DBE58), (uintptr_t)BYVER("\x4C\xF2\x50\x32", "\x12\x6A\x98\x52"), 4); // 4999 -> 50000
-    aml->Write(pGTASA + BYVER(0x315BC4, 0x3DBE48), (uintptr_t)BYVER("\x4C\xF2\x1E\x32", "\xCE\x63\x98\x52"), 4); // 4950 -> 49950
+    aml->Write32(pGTASA + BYVER(0x315B06, 0x3DBE58), BYVER(MOVWBits::Create(maxLoadedPathNodes-1, 2), MOVBits::Create(maxLoadedPathNodes-1, 18, false))); // 4999 -> maxLoadedPathNodes-1
+    aml->Write32(pGTASA + BYVER(0x315BC4, 0x3DBE48), BYVER(MOVWBits::Create(maxLoadedPathNodes-50, 2), MOVBits::Create(maxLoadedPathNodes-50, 14, false))); // 4950 -> maxLoadedPathNodes-50
     aml->Unprot(pGTASA + BYVER(0x67899C, 0x84F358), sizeof(void*)); *(uintptr_t*)(pGTASA + BYVER(0x67899C, 0x84F358)) = (uintptr_t)aStreamablePathNodes;
 
     #ifdef AML32
