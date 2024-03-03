@@ -26,7 +26,7 @@
 #define GPS_LINE_B              0
 #define GPS_LINE_A              255
 
-MYMODCFG(net.dk22pac.rusjj.gps, GTA:SA GPS, 1.3.2, DK22Pac & JuniorDjjr & juicermv & RusJJ)
+MYMODCFG(net.dk22pac.rusjj.gps, GTA:SA GPS, 1.3.3, DK22Pac & JuniorDjjr & juicermv & RusJJ)
 NEEDGAME(com.rockstargames.gtasa)
 
 CVector2D g_vecUnderRadar(0.0, -1.05); // 0
@@ -279,7 +279,7 @@ unsigned short* textGxt = new unsigned short[0xFF];
 DECL_HOOK(void, PreRenderEnd, void* self)
 {
     PreRenderEnd(self);
-    if(gpsDistance > 0.0f && !IsGamePaused() && IsRadarVisible() && pCfgGPSDrawDistance->GetBool())
+    if(gpsDistance > 0.0f && !IsGamePaused() && IsRadarVisible())
     {
         static bool bInit = false;
         if(!bInit)
@@ -287,32 +287,35 @@ DECL_HOOK(void, PreRenderEnd, void* self)
             bInit = true;
             SetDistanceTextValues();
         }
-        
-        if(!bImperialUnits)
-        {
-            if(gpsDistance == 100000.0f) sprintf(text, "Far from the road!");
-            else if (gpsDistance >= 1000.0f) sprintf(text, "%.2fkm", 0.001f * gpsDistance);
-            else sprintf(text, "%dm", (int)gpsDistance);
-        }
-        else
-        {
-            if(gpsDistance == 100000.0f) sprintf(text, "Far from the road!");
-            else if (gpsDistance > 1609.344f) sprintf(text, "%.2fmil", 0.000621371192237334f * gpsDistance);
-            else sprintf(text, "%dyrd", (int)(gpsDistance * 1.094f));
-        }
-        AsciiToGxtChar(text, textGxt);
 
-        FontSetOrientation(g_nTextAlignment);
-        if(!TargetBlip.m_nHandleIndex && pTrace) FontSetColor((CRGBA*)&GetTraceTextColor(pTrace->m_nColour, pTrace->m_bFriendly));
-        else FontSetColor((CRGBA*)&rgbaWhite);
-        FontSetBackground(false, false);
-        FontSetWrapx(500.0f);
-        FontSetScale(textScale);
-        FontSetStyle(FONT_SUBTITLES);
-        FontSetProportional(true);
-        FontSetDropShadowPosition(1);
-        FontPrintString(gpsDistanceTextPos.x, gpsDistanceTextPos.y, textGxt);
-        RenderFontBuffer();
+        if(pCfgGPSDrawDistance->GetBool())
+        {
+            if(!bImperialUnits)
+            {
+                if(gpsDistance == 100000.0f) sprintf(text, "Far from the road!");
+                else if (gpsDistance >= 1000.0f) sprintf(text, "%.2fkm", 0.001f * gpsDistance);
+                else sprintf(text, "%dm", (int)gpsDistance);
+            }
+            else
+            {
+                if(gpsDistance == 100000.0f) sprintf(text, "Far from the road!");
+                else if (gpsDistance > 1609.344f) sprintf(text, "%.2fmil", 0.000621371192237334f * gpsDistance);
+                else sprintf(text, "%dyrd", (int)(gpsDistance * 1.094f));
+            }
+            AsciiToGxtChar(text, textGxt);
+
+            FontSetOrientation(g_nTextAlignment);
+            if(!TargetBlip.m_nHandleIndex && pTrace) FontSetColor((CRGBA*)&GetTraceTextColor(pTrace->m_nColour, pTrace->m_bFriendly));
+            else FontSetColor((CRGBA*)&rgbaWhite);
+            FontSetBackground(false, false);
+            FontSetWrapx(500.0f);
+            FontSetScale(textScale);
+            FontSetStyle(FONT_SUBTITLES);
+            FontSetProportional(true);
+            FontSetDropShadowPosition(1);
+            FontPrintString(gpsDistanceTextPos.x, gpsDistanceTextPos.y, textGxt);
+            RenderFontBuffer();
+        }
     }
     gpsDistance = 0;
 }
@@ -378,7 +381,7 @@ void DoPathDraw(CVector to, RwUInt32 color, bool isTargetBlip = false, float* di
 
         if(IsRadarVisible() || isGamePaused)
         {
-            if (bScissors) SetScissorRect(radarRect); // Scissor
+            if (bScissors) SetScissorRect(radarRect); // Scissors
             RwRenderStateSet(rwRENDERSTATETEXTURERASTER, NULL);
 
             unsigned int vertIndex = 0;
@@ -427,7 +430,7 @@ void DoPathDraw(CVector to, RwUInt32 color, bool isTargetBlip = false, float* di
                 }
             }
             RwIm2DRenderPrimitive(rwPRIMTYPETRISTRIP, lineVerts, 4 * nodesCount);
-            if (bScissors) SetScissorRect(emptyRect); // Scissor
+            if (bScissors) SetScissorRect(emptyRect); // Scissors
         }
     }
 }
