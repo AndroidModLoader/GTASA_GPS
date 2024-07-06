@@ -6,27 +6,20 @@
     #include "GTASA_STRUCTS.h"
     #include "AArch64_ModHelper/Thumbv7_ASMHelper.h"
     using namespace ThumbV7;
-    #define BYVER(__for32, __for64) (__for32)
 #else
     #include "GTASA_STRUCTS_210.h"
     #include "AArch64_ModHelper/ARMv8_ASMHelper.h"
     using namespace ARMv8;
-    #define BYVER(__for32, __for64) (__for64)
 #endif
 
-#define TOBESTREAM_NODES_DEF    8
-#define TOBESTREAM_NODES_MULT   8
-#define TOBESTREAM_NODES        TOBESTREAM_NODES_MULT * TOBESTREAM_NODES_DEF
-#define STREAM_RADIUS           6500.0f
-#define STREAM_RADIUS_LIMIT     STREAM_RADIUS*1.01f
-#define MAX_NODE_POINTS         65536
+#define MAX_NODE_POINTS         50000
 
 #define GPS_LINE_R              235
 #define GPS_LINE_G              212
 #define GPS_LINE_B              0
 #define GPS_LINE_A              255
 
-MYMODCFG(net.dk22pac.rusjj.gps, GTA:SA GPS, 1.3.3, DK22Pac & JuniorDjjr & juicermv & RusJJ)
+MYMODCFG(net.dk22pac.rusjj.gps, GTA:SA GPS, 1.4, DK22Pac & JuniorDjjr & juicermv & RusJJ)
 NEEDGAME(com.rockstargames.gtasa)
 
 CVector2D g_vecUnderRadar(0.0, -1.05); // 0
@@ -36,8 +29,7 @@ CVector2D g_vecRightRadar(1.05, 0.0); // 3
 eFontAlignment g_nTextAlignment;
 
 // Patched
-CNodeAddress* aPathNodes;
-uint8_t aStreamablePathNodes[8 * TOBESTREAM_NODES];
+CNodeAddress aNodesToBeCleared_NEW[MAX_NODE_POINTS];
 
 // Savings
 uintptr_t pGTASA;
@@ -55,6 +47,7 @@ CVector2D vecTextOffset;
 tRadarTrace* pTrace;
 bool *ExtraPathsNeeded;
 CVector *ExtraPathPos;
+uint8_t *ToBeStreamed;
 
 // Config
 ConfigEntry* pCfgClosestMaxGPSDistance;
@@ -64,7 +57,7 @@ ConfigEntry* pCfgGPSDrawDistance;
 ConfigEntry* pCfgGPSDrawDistancePosition;
 ConfigEntry* pCfgGPSDrawDistanceTextScale;
 ConfigEntry* pCfgGPSDrawDistanceTextOffset;
-bool bAllowBMX, bAllowBoat, bAllowMission, bImperialUnits;
+bool bAllowBMX, bAllowBoat, bAllowMission, bImperialUnits, bRespectLanesDirection;
 
 // Game Vars
 RsGlobalType* RsGlobal;
@@ -77,6 +70,7 @@ float* RecipNearClip;
 bool *m_UserPause, *m_CodePause;
 CWidget** aWidgets;
 CPickup* aPickUps;
+uint32_t *m_snTimeInMilliseconds, *m_snPreviousTimeInMilliseconds;
 
 // Game Funcs
 CPlayerPed* (*FindPlayerPed)(int);
@@ -96,6 +90,11 @@ bool (*IsOnAMission)();
 CPed* (*GetPoolPed)(int);
 CVehicle* (*GetPoolVeh)(int);
 CObject* (*GetPoolObj)(int);
+void (*RequestModel)(int, int);
+void (*RemoveModel)(int);
+void (*LoadAllRequestedModels)(bool);
+void (*MarkRegionsForCoors)(CPathFind*, CVector, float);
+void (*RequestCollision)(CVector*, int);
 
 void (*FontSetOrientation)(unsigned char);
 void (*FontSetColor)(CRGBA*);
@@ -118,6 +117,11 @@ inline bool IsRadarVisible()
     CWidget* radar = aWidgets[161];
     return (radar != NULL && radar->enabled);
 }
+inline uint8_t GetRadarVisibility()
+{
+    CWidget* radar = aWidgets[161];
+    return (radar) ? radar->color.a : 0;
+}
 inline bool IsGamePaused() { return *m_CodePause || *m_UserPause; };
 inline bool IsRGBValue(int value) { return value >= 0 && value <= 255; }
 void InitializeConfigValues()
@@ -137,23 +141,23 @@ RwUInt32 GetTraceColor(eBlipColour clr, bool friendly = false)
     switch(clr)
     {
         case BLIP_COLOUR_RED:
-            return RWRGBALONG(127,0,0,255);
+            return RWRGBALONG(127,   0,   0, 255);
         case BLIP_COLOUR_GREEN:
-            return RWRGBALONG(0,127,0,255);
+            return RWRGBALONG(  0, 127,   0, 255);
         case BLIP_COLOUR_BLUE:
-            return RWRGBALONG(0,0,127,255);
+            return RWRGBALONG(  0,   0, 127, 255);
         case BLIP_COLOUR_WHITE:
-            return RWRGBALONG(127,127,127,255);
+            return RWRGBALONG(127, 127, 127, 255);
         case BLIP_COLOUR_YELLOW:
-            return RWRGBALONG(200,200,0,255);
+            return RWRGBALONG(200, 200,   0, 255);
         case BLIP_COLOUR_PURPLE:
-            return RWRGBALONG(127,0,127,255);
+            return RWRGBALONG(127,   0, 127, 255);
         case BLIP_COLOUR_CYAN:
-            return RWRGBALONG(0,127,127,255);
+            return RWRGBALONG(  0, 127, 127, 255);
         case BLIP_COLOUR_THREAT:
-            return friendly ? RWRGBALONG(0,0,127,255) : RWRGBALONG(127,0,0,255);
+            return friendly ? RWRGBALONG(0, 0, 127, 255) : RWRGBALONG(127, 0, 0, 255);
         case BLIP_COLOUR_DESTINATION:
-            return RWRGBALONG(200,200,0,255);
+            return RWRGBALONG(200, 200,   0, 255);
             
         default:
             CRGBA a((int)clr);
@@ -266,7 +270,7 @@ inline bool IsInSupportedVehicle(CPlayerPed* player)
 
 inline bool LaneDirectionRespected()
 {
-    return false;
+    return bRespectLanesDirection;
 }
 
 inline bool IsBoatNaviAllowed()
@@ -299,14 +303,17 @@ DECL_HOOK(void, PreRenderEnd, void* self)
             else
             {
                 if(gpsDistance == 100000.0f) sprintf(text, "Far from the road!");
-                else if (gpsDistance > 1609.344f) sprintf(text, "%.2fmil", 0.000621371192237334f * gpsDistance);
+                else if (gpsDistance > 1609.344f) sprintf(text, "%.2fmil", (float)(0.000621371192237334 * (double)gpsDistance));
                 else sprintf(text, "%dyrd", (int)(gpsDistance * 1.094f));
             }
             AsciiToGxtChar(text, textGxt);
 
+            static CRGBA drawingColor;
+            drawingColor = (!TargetBlip.m_nHandleIndex && pTrace) ? GetTraceTextColor(pTrace->m_nColour, pTrace->m_bFriendly) : rgbaWhite;
+            //drawingColor.a = GetRadarVisibility();
+
             FontSetOrientation(g_nTextAlignment);
-            if(!TargetBlip.m_nHandleIndex && pTrace) FontSetColor((CRGBA*)&GetTraceTextColor(pTrace->m_nColour, pTrace->m_bFriendly));
-            else FontSetColor((CRGBA*)&rgbaWhite);
+            FontSetColor(&drawingColor);
             FontSetBackground(false, false);
             FontSetWrapx(500.0f);
             FontSetScale(textScale);
@@ -335,13 +342,11 @@ void DoPathDraw(CVector to, RwUInt32 color, bool isTargetBlip = false, float* di
     
     bool isGamePaused = IsGamePaused(), bScissors = (!isGamePaused || !gMobileMenu->m_bDrawMenuMap);
     
-    *ExtraPathsNeeded = true;
-    *ExtraPathPos = to;
+    //*ExtraPathsNeeded = true;
+    //*ExtraPathPos = to;
     DoPathSearch(ThePaths, LaneDirectionRespected() && player->m_pVehicle->m_nVehicleSubType != VEHICLE_TYPE_BOAT, player->GetPosition(), 
                  CNodeAddress(), to, resultNodes, &nodesCount, maxLoadedPathNodes, dist ? dist : &trashVar, 1000000.0f, NULL, 1000000.0f, false,
                  CNodeAddress(), false, player->m_pVehicle->m_nVehicleSubType == VEHICLE_TYPE_BOAT && IsBoatNaviAllowed());
-
-    //logger->Info("DoPathSearch %d %d", maxLoadedPathNodes, (int)nodesCount);
 
     if(nodesCount > 0)
     {
@@ -448,7 +453,12 @@ DECL_HOOKv(PostRadarDraw, bool b)
         }
 
         CVector& bpos = pRadarTrace[gMobileMenu->m_TargetBlipHandle.m_nId].m_vecWorldPosition;
-        if(bpos.z == 0) bpos.z = FindGroundZForCoord(bpos.x, bpos.y) + 5.0f;
+        if(bpos.z == 0)
+        {
+            RequestCollision(&bpos, -1);
+            LoadAllRequestedModels(false);
+            bpos.z = FindGroundZForCoord(bpos.x, bpos.y) + 5.0f;
+        }
         DoPathDraw(bpos, gpsLineColor, true, &gpsDistance);
     }
     else
@@ -534,61 +544,57 @@ DECL_HOOKv(PostRadarDraw, bool b)
     }
 }
 
-#ifdef AML64
-float *StreamableDist1, *StreamableDist2, *StreamableDist3;
 DECL_HOOKv(LoadSceneForPathNodes, CPathFind* self, CVector center)
 {
-    *StreamableDist1 = STREAM_RADIUS_LIMIT;
-    *StreamableDist2 = STREAM_RADIUS;
-    *StreamableDist3 = -STREAM_RADIUS;
-    LoadSceneForPathNodes(self, center);
-    *StreamableDist1 = 3000.0f;
-    *StreamableDist2 = 350.0f;
-    *StreamableDist3 = -350.0f;
-}
-DECL_HOOKv(UpdateStreaming, CPathFind* self, bool bForceLoad)
-{
-    *StreamableDist1 = STREAM_RADIUS_LIMIT;
-    *StreamableDist2 = STREAM_RADIUS;
-    *StreamableDist3 = -STREAM_RADIUS;
-    UpdateStreaming(self, bForceLoad);
-    *StreamableDist1 = 3000.0f;
-    *StreamableDist2 = 350.0f;
-    *StreamableDist3 = -350.0f;
-}
-DECL_HOOKv(MakeRequestForNodesToBeLoaded, CPathFind* self, float MinX, float MaxX, float MinY, float MaxY)
-{
-    self->bActiveRequestForRegions = true;
-    self->RequestMinX = MinX;
-    self->RequestMaxX = MaxX;
-    self->RequestMinY = MinY;
-    self->RequestMaxY = MaxY;
-    HookOf_UpdateStreaming(self, true);
+    memset(ToBeStreamed, 0, 64);
+    CPlayerPed* player = FindPlayerPed(-1);
+
+    if(player)
+    {
+        MarkRegionsForCoors(self, center, 300.0f);
+        MarkRegionsForCoors(self, player->GetPosition(), 4300.0f);
+    }
+    else
+    {
+        MarkRegionsForCoors(self, center, 4300.0f);
+    }
+    for(int i = 0; i < 64; ++i)
+    {
+        if(ToBeStreamed[i] != 0) RequestModel(25511 + i, STREAMING_NONE);
+    }
 }
 
-uintptr_t DoPathFind_BackTo1, DoPathFind_BackTo2, DoPathFind_BackTo3;
-__attribute__((optnone)) __attribute__((naked)) void DoPathFind_Inject1(void)
+DECL_HOOKv(UpdateStreaming, CPathFind *self, bool forceLoad)
 {
-    asm("MOV W9, WZR\nEOR W12, W8, #1");
-    asm volatile("MOV X8, %0" :: "r"(&aPathNodes));
+    if(!forceLoad && !*ExtraPathsNeeded && (*m_snTimeInMilliseconds ^ *m_snPreviousTimeInMilliseconds) < 512) return;
+    memset(ToBeStreamed, 0, 64);
+
+    CPlayerPed* player = FindPlayerPed(-1);
+    if(player) MarkRegionsForCoors(self, player->GetPosition(), 4300.0f);
+    if(*ExtraPathsNeeded)
+    {
+        MarkRegionsForCoors(self, *ExtraPathPos, 4300.0f);
+        *ExtraPathsNeeded = false;
+    }
+    for(int i = 0; i < 64; ++i)
+    {
+        if(ToBeStreamed[i] != 0)
+        {
+            if(self->pNodes[i] == NULL) RequestModel(25511 + i, STREAMING_KEEP_IN_MEMORY);
+        }
+        else if(self->pNodes[i] != NULL) RemoveModel(25511 + i);
+    }
+}
+
+#ifdef AML64
+uintptr_t DoPathFind_BackTo;
+__attribute__((optnone)) __attribute__((naked)) void DoPathFind_Inject(void)
+{
+    asm("MOV W2, WZR\nMOV W9, WZR\nEOR W12, W8, #1");
+    asm volatile("MOV X8, %0" :: "r"(&aNodesToBeCleared_NEW[0]));
     asm volatile("STR W1, [X8]");
-    asm volatile("MOV X1, X8");
-    asm volatile("MOV X16, %0\n" :: "r"(DoPathFind_BackTo1));
+    asm volatile("MOV X16, %0\n" :: "r"(DoPathFind_BackTo));
     asm("BR X16");
-}
-__attribute__((optnone)) __attribute__((naked)) void DoPathFind_Inject2(void)
-{
-    asm("MOV W8, W8\nSTR X8, [SP, #-16]!\nMOV W10, #0x28");
-    asm volatile("MOV X9, %0" :: "r"(&aPathNodes));
-    asm volatile("MOV X16, %0\n" :: "r"(DoPathFind_BackTo2));
-    asm("LDR X8, [SP], #16\nBR X16");
-}
-__attribute__((optnone)) __attribute__((naked)) void DoPathFind_Inject3(void)
-{
-    asm("MOV W8, W8\nSTR X8, [SP, #-16]!\nMOV W10, #0x28");
-    asm volatile("MOV X9, %0" :: "r"(&aPathNodes));
-    asm volatile("MOV X16, %0\n" :: "r"(DoPathFind_BackTo3));
-    asm("LDR X8, [SP], #16\nBR X16");
 }
 #endif
 
@@ -596,14 +602,15 @@ extern "C" void OnModLoad()
 {
     logger->SetTag("GPS AML");
     pGTASA = aml->GetLib("libGTASA.so");
-    hGTASA = dlopen("libGTASA.so", RTLD_LAZY);
+    hGTASA = aml->GetLibHandle("libGTASA.so");
 
-    pCfgClosestMaxGPSDistance = cfg->Bind("ClosestMaxGPSDistance", 50.0f);
+    pCfgClosestMaxGPSDistance = cfg->Bind("ClosestMaxGPSDistance", 40.0f);
     pCfgClosestMaxGPSDistance->Clamp(0.0f, 200.0f);
 
-    pCfgGPSMaxPathNodesLoaded = cfg->Bind("GPSMaxPathNodesLoaded", 65000);
-    pCfgGPSMaxPathNodesLoaded->Clamp(5000, 65536);
+    pCfgGPSMaxPathNodesLoaded = cfg->Bind("GPSMaxPathNodesLoaded", 50000);
+    pCfgGPSMaxPathNodesLoaded->Clamp(5000, MAX_NODE_POINTS);
     maxLoadedPathNodes = pCfgGPSMaxPathNodesLoaded->GetInt();
+    delete pCfgGPSMaxPathNodesLoaded;
     
     pCfgGPSLineColorRGB = cfg->Bind("GPSLineColorRGB", STRINGIFY(GPS_LINE_R)" " STRINGIFY(GPS_LINE_G)" " STRINGIFY(GPS_LINE_B)" " STRINGIFY(GPS_LINE_A));
     lineWidth = cfg->GetFloat("GPSLineWidth", 4.0f);
@@ -614,8 +621,8 @@ extern "C" void OnModLoad()
     bAllowBMX = cfg->GetBool("AllowBMX", false);
     bAllowBoat = cfg->GetBool("AllowBoatNavi", true);
     bAllowMission = cfg->GetBool("MissionRoutes", true);
-    // People need this. https://github.com/juicermv/GTA-GPS-Redux/issues/13
-    bImperialUnits = cfg->GetBool("UseImperialUnits", false);
+    bImperialUnits = cfg->GetBool("UseImperialUnits", false); // People need this. https://github.com/juicermv/GTA-GPS-Redux/issues/13
+    bRespectLanesDirection = cfg->GetBool("RespectLanesDirection", false);
     
     int r, g, b, a, sscanfed = sscanf(pCfgGPSLineColorRGB->GetString(), "%d %d %d %d", &r, &g, &b, &a);
     if(sscanfed == 4 && IsRGBValue(r) && IsRGBValue(g) && IsRGBValue(b) && IsRGBValue(a))
@@ -631,6 +638,7 @@ extern "C" void OnModLoad()
         pCfgGPSLineColorRGB->SetString(STRINGIFY(GPS_LINE_R)" " STRINGIFY(GPS_LINE_G)" " STRINGIFY(GPS_LINE_B)" " STRINGIFY(GPS_LINE_A));
         cfg->Save();
     }
+    delete pCfgGPSLineColorRGB;
     
     cfg->Bind("Author", "", "About")->SetString("[-=KILL MAN=-]"); cfg->ClearLast();
     cfg->Bind("IdeasFrom", "", "About")->SetString("DK22Pac, JuniorDjjr, juicermv"); cfg->ClearLast();
@@ -640,11 +648,17 @@ extern "C" void OnModLoad()
 
     // Init
 
-    for(int i = 0; i < 8 * TOBESTREAM_NODES; ++i) aStreamablePathNodes[i] = 1;
-    aPathNodes = new CNodeAddress[maxLoadedPathNodes];
-    for(int i = 0; i < maxLoadedPathNodes; ++i) *(uint32_t*)(&aPathNodes[i]) = 0xFFFF;
+    for(int i = 0; i < maxLoadedPathNodes; ++i) *(uint32_t*)(&aNodesToBeCleared_NEW[i]) = 0xFFFFFFFF;
 
     // Hooks
+
+    HOOKPLT(PreRenderEnd,                       pGTASA + BYBIT(0x674188, 0x846E90));
+    HOOKPLT(InitRenderWare,                     pGTASA + BYBIT(0x66F2D0, 0x8432F0));
+    HOOK(PostRadarDraw,                         aml->GetSym(hGTASA, "_ZN6CRadar20DrawRadarGangOverlayEb"));
+    HOOKBLX(LoadSceneForPathNodes,              pGTASA + BYBIT(0x2D4AFE + 0x1, 0x3970DC));
+    HOOK(UpdateStreaming,                       aml->GetSym(hGTASA, "_ZN9CPathFind15UpdateStreamingEb"));
+
+    // Vars
 
     SET_TO(ThePaths,                            aml->GetSym(hGTASA, "ThePaths"));
     SET_TO(gMobileMenu,                         aml->GetSym(hGTASA, "gMobileMenu"));
@@ -684,116 +698,35 @@ extern "C" void OnModLoad()
     SET_TO(GetPoolPed,                          aml->GetSym(hGTASA, "_ZN6CPools6GetPedEi"));
     SET_TO(GetPoolVeh,                          aml->GetSym(hGTASA, "_ZN6CPools10GetVehicleEi"));
     SET_TO(GetPoolObj,                          aml->GetSym(hGTASA, "_ZN6CPools9GetObjectEi"));
+    SET_TO(RequestModel,                        aml->GetSym(hGTASA, "_ZN10CStreaming12RequestModelEii"));
+    SET_TO(RemoveModel,                         aml->GetSym(hGTASA, "_ZN10CStreaming11RemoveModelEi"));
+    SET_TO(LoadAllRequestedModels,              aml->GetSym(hGTASA, "_ZN10CStreaming22LoadAllRequestedModelsEb"));
+    SET_TO(MarkRegionsForCoors,                 aml->GetSym(hGTASA, "_ZN9CPathFind19MarkRegionsForCoorsE7CVectorf"));
+    SET_TO(RequestCollision,                    aml->GetSym(hGTASA, "_ZN9CColStore16RequestCollisionERK7CVectori"));
 
-    HOOKPLT(PreRenderEnd,                       pGTASA + BYVER(0x674188, 0x846E90));
-    HOOKPLT(InitRenderWare,                     pGTASA + BYVER(0x66F2D0, 0x8432F0));
-    HOOK(PostRadarDraw,                         aml->GetSym(hGTASA, "_ZN6CRadar20DrawRadarGangOverlayEb"));
-    SET_TO(aWidgets,                            *(void**)(pGTASA + BYVER(0x67947C, 0x850910)));
-    SET_TO(aPickUps,                            aml->GetSym(hGTASA, "_ZN8CPickups8aPickUpsE"));
-    SET_TO(ExtraPathsNeeded,                    pGTASA + BYVER(0x7AEE04, 0x9905C8));
-    SET_TO(ExtraPathPos,                        pGTASA + BYVER(0x7AEDF8, 0x9905BC));
+    SET_TO(aWidgets,                            *(void**)(pGTASA + BYBIT(0x67947C, 0x850910)));
+    SET_TO(aPickUps,                            *(void**)(pGTASA + BYBIT(0x678BF8, 0x84F818)));
+    SET_TO(ExtraPathsNeeded,                    pGTASA + BYBIT(0x7AEE04, 0x9905C8));
+    SET_TO(ExtraPathPos,                        pGTASA + BYBIT(0x7AEDF8, 0x9905BC));
+    SET_TO(ToBeStreamed,                        aml->GetSym(hGTASA, "ToBeStreamed"));
+    SET_TO(m_snTimeInMilliseconds,              aml->GetSym(hGTASA, "_ZN6CTimer22m_snTimeInMillisecondsE"));
+    SET_TO(m_snPreviousTimeInMilliseconds,      aml->GetSym(hGTASA, "_ZN6CTimer30m_snPreviousTimeInMillisecondsE"));
 
     // Patches
 
-    aml->Write32(pGTASA + BYVER(0x315B06, 0x3DBE58), BYVER(MOVWBits::Create(maxLoadedPathNodes-1, 2), MOVBits::Create(maxLoadedPathNodes-1, 18, false))); // 4999 -> maxLoadedPathNodes-1
-    aml->Write32(pGTASA + BYVER(0x315BC4, 0x3DBE48), BYVER(MOVWBits::Create(maxLoadedPathNodes-50, 2), MOVBits::Create(maxLoadedPathNodes-50, 14, false))); // 4950 -> maxLoadedPathNodes-50
-    aml->Unprot(pGTASA + BYVER(0x67899C, 0x84F358), sizeof(void*)); *(uintptr_t*)(pGTASA + BYVER(0x67899C, 0x84F358)) = (uintptr_t)aStreamablePathNodes;
+    aml->Write32(pGTASA + BYBIT(0x315B06, 0x3DBE58), BYBIT(MOVWBits::Create(maxLoadedPathNodes-1, 2), MOVBits::Create(maxLoadedPathNodes-1, 18, false))); // 4999 -> maxLoadedPathNodes-1
+    aml->Write32(pGTASA + BYBIT(0x315BC4, 0x3DBE48), BYBIT(MOVWBits::Create(maxLoadedPathNodes-50, 2), MOVBits::Create(maxLoadedPathNodes-50, 14, false))); // 4950 -> maxLoadedPathNodes-50
 
-    #ifdef AML32
-    aml->Unprot(pGTASA + 0x315D30, sizeof(void*)); *(uintptr_t*)(pGTASA + 0x315D30) = (uintptr_t)aPathNodes - 0x31598A - pGTASA;
-    aml->Unprot(pGTASA + 0x315D34, sizeof(void*)); *(uintptr_t*)(pGTASA + 0x315D34) = (uintptr_t)aPathNodes - 0x315BE2 - pGTASA;
-    aml->Unprot(pGTASA + 0x315D38, sizeof(void*)); *(uintptr_t*)(pGTASA + 0x315D38) = (uintptr_t)aPathNodes - 0x315D08 - pGTASA;
-    aml->Unprot(pGTASA + 0x315D3C, sizeof(void*)); *(uintptr_t*)(pGTASA + 0x315D3C) = (uintptr_t)aPathNodes - 0x315B20 - pGTASA;
-    
-    aml->Unprot(pGTASA + 0x31A04C, sizeof(float)); *(float*)(pGTASA + 0x31A04C) = -STREAM_RADIUS;
-    aml->Unprot(pGTASA + 0x31A050, sizeof(float)); *(float*)(pGTASA + 0x31A050) = STREAM_RADIUS;
-    aml->Unprot(pGTASA + 0x31A054, sizeof(float)); *(float*)(pGTASA + 0x31A054) = STREAM_RADIUS_LIMIT;
-    //aml->Unprot(pGTASA + 0x31A058, sizeof(float)); *(float*)(pGTASA + 0x31A058) = 750.0f / (float)TOBESTREAM_NODES_MULT;
-    
-    //aml->Unprot(pGTASA + 0x319754 + 0x2, sizeof(char)); *(unsigned char*)(pGTASA + 0x319754 + 0x2) = TOBESTREAM_NODES-1;
-    //aml->Unprot(pGTASA + 0x31976A + 0x0, sizeof(char)); *(unsigned char*)(pGTASA + 0x31976A + 0x0) = TOBESTREAM_NODES-1;
-    //aml->Unprot(pGTASA + 0x3197C8 + 0x2, sizeof(char)); *(unsigned char*)(pGTASA + 0x3197C8 + 0x2) = TOBESTREAM_NODES-1;
-    //aml->Unprot(pGTASA + 0x3197D6 + 0x0, sizeof(char)); *(unsigned char*)(pGTASA + 0x3197D6 + 0x0) = TOBESTREAM_NODES-1;
-    //aml->Unprot(pGTASA + 0x3197E2 + 0x0, sizeof(char)); *(unsigned char*)(pGTASA + 0x3197E2 + 0x0) = TOBESTREAM_NODES-1;
-    //aml->Unprot(pGTASA + 0x3197EE + 0x0, sizeof(char)); *(unsigned char*)(pGTASA + 0x3197EE + 0x0) = TOBESTREAM_NODES-1;
-    //aml->Unprot(pGTASA + 0x319806 + 0x2, sizeof(char)); *(unsigned char*)(pGTASA + 0x319806 + 0x2) = TOBESTREAM_NODES-1;
-    //aml->Unprot(pGTASA + 0x31980A + 0x2, sizeof(char)); *(unsigned char*)(pGTASA + 0x31980A + 0x2) = TOBESTREAM_NODES;
-    //aml->Unprot(pGTASA + 0x31981C + 0x2, sizeof(char)); *(unsigned char*)(pGTASA + 0x31981C + 0x2) = TOBESTREAM_NODES;
-    //aml->Unprot(pGTASA + 0x31988E + 0x2, sizeof(char)); *(unsigned char*)(pGTASA + 0x31988E + 0x2) = TOBESTREAM_NODES-1;
-    //aml->Unprot(pGTASA + 0x31989C + 0x0, sizeof(char)); *(unsigned char*)(pGTASA + 0x31989C + 0x0) = TOBESTREAM_NODES-1;
-    //aml->Unprot(pGTASA + 0x3198FC + 0x2, sizeof(char)); *(unsigned char*)(pGTASA + 0x3198FC + 0x2) = TOBESTREAM_NODES-1;
-    //aml->Unprot(pGTASA + 0x31990A + 0x0, sizeof(char)); *(unsigned char*)(pGTASA + 0x31990A + 0x0) = TOBESTREAM_NODES-1;
-    //aml->Unprot(pGTASA + 0x319918 + 0x2, sizeof(char)); *(unsigned char*)(pGTASA + 0x319918 + 0x2) = TOBESTREAM_NODES-1;
-    //aml->Unprot(pGTASA + 0x31992A + 0x0, sizeof(char)); *(unsigned char*)(pGTASA + 0x31992A + 0x0) = TOBESTREAM_NODES-1;
-    //aml->Unprot(pGTASA + 0x31992C + 0x0, sizeof(char)); *(unsigned char*)(pGTASA + 0x31992C + 0x0) = TOBESTREAM_NODES-1;
-    //aml->Unprot(pGTASA + 0x319940 + 0x2, sizeof(char)); *(unsigned char*)(pGTASA + 0x319940 + 0x2) = TOBESTREAM_NODES;
-    //aml->Unprot(pGTASA + 0x319944 + 0x2, sizeof(char)); *(unsigned char*)(pGTASA + 0x319944 + 0x2) = TOBESTREAM_NODES-1;
-    //aml->Unprot(pGTASA + 0x319962 + 0x2, sizeof(char)); *(unsigned char*)(pGTASA + 0x319962 + 0x2) = TOBESTREAM_NODES-1;
-    //aml->Unprot(pGTASA + 0x31996A + 0x2, sizeof(char)); *(unsigned char*)(pGTASA + 0x31996A + 0x2) = TOBESTREAM_NODES-1;
-//
-    //aml->Unprot(pGTASA + 0x319E6C + 0x2, sizeof(char)); *(unsigned char*)(pGTASA + 0x319E6C + 0x2) = TOBESTREAM_NODES-1;
-    //aml->Unprot(pGTASA + 0x319EC2 + 0x0, sizeof(char)); *(unsigned char*)(pGTASA + 0x319EC2 + 0x0) = TOBESTREAM_NODES-1;
-    //aml->Unprot(pGTASA + 0x319EE4 + 0x2, sizeof(char)); *(unsigned char*)(pGTASA + 0x319EE4 + 0x2) = TOBESTREAM_NODES-1;
-    //aml->Unprot(pGTASA + 0x319EF2 + 0x0, sizeof(char)); *(unsigned char*)(pGTASA + 0x319EF2 + 0x0) = TOBESTREAM_NODES-1;
-    //aml->Unprot(pGTASA + 0x319EFE + 0x0, sizeof(char)); *(unsigned char*)(pGTASA + 0x319EFE + 0x0) = TOBESTREAM_NODES-1;
-    //aml->Unprot(pGTASA + 0x319F0A + 0x0, sizeof(char)); *(unsigned char*)(pGTASA + 0x319F0A + 0x0) = TOBESTREAM_NODES-1;
-    //
-    //aml->Unprot(pGTASA + 0x319F28 + 0x2, sizeof(char)); *(unsigned char*)(pGTASA + 0x319F28 + 0x2) = TOBESTREAM_NODES;
-    //aml->Unprot(pGTASA + 0x319F32 + 0x2, sizeof(char)); *(unsigned char*)(pGTASA + 0x319F32 + 0x2) = TOBESTREAM_NODES;
-    
-    aml->Unprot(pGTASA + 0x3199A8, sizeof(float)); *(float*)(pGTASA + 0x3199A8) = -STREAM_RADIUS;
-    aml->Unprot(pGTASA + 0x3199AC, sizeof(float)); *(float*)(pGTASA + 0x3199AC) = STREAM_RADIUS;
-    aml->Unprot(pGTASA + 0x3199B0, sizeof(float)); *(float*)(pGTASA + 0x3199B0) = STREAM_RADIUS_LIMIT;
-    //aml->Unprot(pGTASA + 0x3199B4, sizeof(float)); *(float*)(pGTASA + 0x3199B4) = 750.0f / (float)TOBESTREAM_NODES_MULT;
-    #else
-    // LoadSceneForPathNodes
-    aml->Write32(pGTASA + 0x3E0B0C, MOVBits::Create(TOBESTREAM_NODES-1, 11, false));
-    aml->Write32(pGTASA + 0x3E0B38, CMPBits::Create(TOBESTREAM_NODES-1, 13, false));
-    aml->Write32(pGTASA + 0x3E0B48, CMPBits::Create(TOBESTREAM_NODES-1, 14, false));
-    aml->Write32(pGTASA + 0x3E0B54, CMPBits::Create(TOBESTREAM_NODES-1,  8, false));
-    aml->Write32(pGTASA + 0x3E0B5C, CMPBits::Create(TOBESTREAM_NODES-1, 12, false));
-    aml->Write32(pGTASA + 0x3E0CA4, CMPBits::Create(TOBESTREAM_NODES,   19, true));
-    
-    // UpdateStreaming
-    aml->Write32(pGTASA + 0x3E0300, MOVBits::Create(TOBESTREAM_NODES-1, 11, false));
-    aml->Write32(pGTASA + 0x3E0310, CMPBits::Create(TOBESTREAM_NODES-1, 13, false));
-    aml->Write32(pGTASA + 0x3E0320, CMPBits::Create(TOBESTREAM_NODES-1, 14, false));
-    aml->Write32(pGTASA + 0x3E032C, CMPBits::Create(TOBESTREAM_NODES-1,  8, false));
-    aml->Write32(pGTASA + 0x3E0334, CMPBits::Create(TOBESTREAM_NODES-1, 12, false));
-
-    aml->Write32(pGTASA + 0x3E0418, MOVBits::Create(TOBESTREAM_NODES-1, 12, false));
-    aml->Write32(pGTASA + 0x3E0428, CMPBits::Create(TOBESTREAM_NODES-1, 13, false));
-    aml->Write32(pGTASA + 0x3E0438, CMPBits::Create(TOBESTREAM_NODES-1, 14, false));
-    aml->Write32(pGTASA + 0x3E0444, CMPBits::Create(TOBESTREAM_NODES-1,  8, false));
-    aml->Write32(pGTASA + 0x3E044C, CMPBits::Create(TOBESTREAM_NODES-1, 11, false));
-
-    aml->Write32(pGTASA + 0x3E051C, MOVBits::Create(TOBESTREAM_NODES-1, 14, false));
-    aml->Write32(pGTASA + 0x3E0574, CMPBits::Create(TOBESTREAM_NODES-1, 12, false));
-    aml->Write32(pGTASA + 0x3E0584, CMPBits::Create(TOBESTREAM_NODES-1, 13, false));
-    aml->Write32(pGTASA + 0x3E0590, CMPBits::Create(TOBESTREAM_NODES-1,  8, false));
-    aml->Write32(pGTASA + 0x3E0598, CMPBits::Create(TOBESTREAM_NODES-1, 11, false));
-
-    aml->Write32(pGTASA + 0x3E06C4, MOVBits::Create(TOBESTREAM_NODES-1, 11, false));
-    aml->Write32(pGTASA + 0x3E06D0, CMPBits::Create(TOBESTREAM_NODES-1, 13, false));
-    aml->Write32(pGTASA + 0x3E06E0, CMPBits::Create(TOBESTREAM_NODES-1,  9, false));
-    aml->Write32(pGTASA + 0x3E06EC, CMPBits::Create(TOBESTREAM_NODES-1,  8, false));
-    aml->Write32(pGTASA + 0x3E06F4, CMPBits::Create(TOBESTREAM_NODES-1, 12, false));
-
-    aml->Write32(pGTASA + 0x3E0718, MOVBits::Create(-TOBESTREAM_NODES,  12, false));
-    aml->Write32(pGTASA + 0x3E0714, CMNBits::Create(TOBESTREAM_NODES,   12, false));
-
-    HOOKPLT(UpdateStreaming, pGTASA + 0x843A40); // Faster code than patching static values
-    HOOKPLT(LoadSceneForPathNodes, pGTASA + 0x848840); // Faster code than patching static values
-    HOOKPLT(MakeRequestForNodesToBeLoaded, pGTASA + 0x845490); // Faster code than patching static values
-
-    SET_TO(StreamableDist1, pGTASA + 0x73B3FC); aml->Unprot((uintptr_t)StreamableDist1);
-    SET_TO(StreamableDist2, pGTASA + 0x740AFC); aml->Unprot((uintptr_t)StreamableDist2);
-    SET_TO(StreamableDist3, pGTASA + 0x740AF8); aml->Unprot((uintptr_t)StreamableDist3);
-
-    aml->PlaceNOP(pGTASA + 0x3DBE1C, 1);
-    aml->PlaceNOP(pGTASA + 0x3DBE60, 1);
-    DoPathFind_BackTo1 = pGTASA + 0x3DBE44; aml->Redirect(pGTASA + 0x3DBE34, (uintptr_t)DoPathFind_Inject1);
-    DoPathFind_BackTo2 = pGTASA + 0x3DC0C0; aml->Redirect(pGTASA + 0x3DC0B0, (uintptr_t)DoPathFind_Inject2);
-    DoPathFind_BackTo3 = pGTASA + 0x3DC248; aml->Redirect(pGTASA + 0x3DC238, (uintptr_t)DoPathFind_Inject3);
-    #endif
+  #ifdef AML32
+    aml->WriteAddr(pGTASA + 0x315D30, (uintptr_t)aNodesToBeCleared_NEW - 0x31598A - pGTASA);
+    aml->WriteAddr(pGTASA + 0x315D34, (uintptr_t)aNodesToBeCleared_NEW - 0x315BE2 - pGTASA);
+    aml->WriteAddr(pGTASA + 0x315D38, (uintptr_t)aNodesToBeCleared_NEW - 0x315D08 - pGTASA);
+    aml->WriteAddr(pGTASA + 0x315D3C, (uintptr_t)aNodesToBeCleared_NEW - 0x315B20 - pGTASA);
+  #else // AML64
+    aml->WriteAddr(pGTASA + 0x9904B0, (uintptr_t)&aNodesToBeCleared_NEW[0]); // using original aNodesToBeCleared as a mapping
+    aml->Redirect(pGTASA + 0x3DBE30, (uintptr_t)DoPathFind_Inject); DoPathFind_BackTo = pGTASA + 0x3DBE40;
+    aml->Write32(pGTASA + 0x3DBE40, 0xB0002DA1); aml->Write32(pGTASA + 0x3DBE60, 0xF9425821);
+    aml->Write32(pGTASA + 0x3DC0B0, 0x90002DA9); aml->Write32(pGTASA + 0x3DC0B8, 0xF9425929);
+    aml->Write32(pGTASA + 0x3DC238, 0x90002DA9); aml->Write32(pGTASA + 0x3DC240, 0xF9425929);
+  #endif
 }
