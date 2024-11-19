@@ -19,7 +19,7 @@
 #define GPS_LINE_B              0
 #define GPS_LINE_A              255
 
-MYMODCFG(net.dk22pac.rusjj.gps, GTA:SA GPS, 1.4, DK22Pac & JuniorDjjr & juicermv & RusJJ)
+MYMODCFG(net.dk22pac.rusjj.gps, GTA:SA GPS, 1.4.1, DK22Pac & JuniorDjjr & juicermv & RusJJ)
 NEEDGAME(com.rockstargames.gtasa)
 
 CVector2D g_vecUnderRadar(0.0, -1.05); // 0
@@ -551,7 +551,7 @@ DECL_HOOKv(LoadSceneForPathNodes, CPathFind* self, CVector center)
 
     if(player)
     {
-        MarkRegionsForCoors(self, center, 300.0f);
+        MarkRegionsForCoors(self, center, 4300.0f);
         MarkRegionsForCoors(self, player->GetPosition(), 4300.0f);
     }
     else
@@ -568,6 +568,16 @@ DECL_HOOKv(UpdateStreaming, CPathFind *self, bool forceLoad)
 {
     if(!forceLoad && !*ExtraPathsNeeded && (*m_snTimeInMilliseconds ^ *m_snPreviousTimeInMilliseconds) < 512) return;
     memset(ToBeStreamed, 0, 64);
+
+    static CVector mapcorner1 = { -3000.0f, -3000.0f, 20.0f };
+    static CVector mapcorner2 = { -3000.0f, 3000.0f, 20.0f };
+    static CVector mapcorner3 = {  3000.0f, -3000.0f, 20.0f };
+    static CVector mapcorner4 = {  3000.0f,  3000.0f, 20.0f };
+
+    MarkRegionsForCoors(self, mapcorner1, 4300.0f);
+    MarkRegionsForCoors(self, mapcorner2, 4300.0f);
+    MarkRegionsForCoors(self, mapcorner3, 4300.0f);
+    MarkRegionsForCoors(self, mapcorner4, 4300.0f);
 
     CPlayerPed* player = FindPlayerPed(-1);
     if(player) MarkRegionsForCoors(self, player->GetPosition(), 4300.0f);
