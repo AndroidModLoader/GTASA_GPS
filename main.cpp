@@ -19,7 +19,7 @@
 #define GPS_LINE_B              0
 #define GPS_LINE_A              255
 
-MYMODCFG(net.dk22pac.rusjj.gps, GTA:SA GPS, 1.4.1, DK22Pac & JuniorDjjr & juicermv & RusJJ)
+MYMODCFG(net.dk22pac.rusjj.gps, GTA:SA GPS, 1.4.2, DK22Pac & JuniorDjjr & juicermv & RusJJ)
 NEEDGAME(com.rockstargames.gtasa)
 
 CVector2D g_vecUnderRadar(0.0, -1.05); // 0
@@ -44,10 +44,9 @@ unsigned int gpsLineColor = RWRGBALONG(GPS_LINE_R, GPS_LINE_G, GPS_LINE_B, GPS_L
 unsigned int maxLoadedPathNodes;
 float lineWidth = 3.5f, textOffset, textScale, flMenuMapScaling;
 CVector2D vecTextOffset;
-tRadarTrace* pTrace;
-bool *ExtraPathsNeeded;
-CVector *ExtraPathPos;
-uint8_t *ToBeStreamed;
+tRadarTrace* pRedMarkerBlip;
+float NearScreenZ_Cache = -1;
+float RecipNearClip_Cache = -1;
 
 // Config
 ConfigEntry* pCfgClosestMaxGPSDistance;
@@ -57,7 +56,8 @@ ConfigEntry* pCfgGPSDrawDistance;
 ConfigEntry* pCfgGPSDrawDistancePosition;
 ConfigEntry* pCfgGPSDrawDistanceTextScale;
 ConfigEntry* pCfgGPSDrawDistanceTextOffset;
-bool bAllowBMX, bAllowBoat, bAllowMission, bImperialUnits, bRespectLanesDirection;
+ConfigEntry* pCfgGPSTextAlignment;
+bool bAllowBMX, bAllowBoat, bAllowMission, bImperialUnits, bRespectLanesDirection, bDisableFarFromRoadText;
 
 // Game Vars
 RsGlobalType* RsGlobal;
@@ -71,6 +71,9 @@ bool *m_UserPause, *m_CodePause;
 CWidget** aWidgets;
 CPickup* aPickUps;
 uint32_t *m_snTimeInMilliseconds, *m_snPreviousTimeInMilliseconds;
+bool *ExtraPathsNeeded;
+CVector *ExtraPathPos;
+uint8_t *ToBeStreamed;
 
 // Game Funcs
 CPlayerPed* (*FindPlayerPed)(int);
@@ -241,14 +244,28 @@ void SetDistanceTextValues()
             gpsDistanceTextPos = vecTextOffset;
             break;
     }
+
+    int newAlign = pCfgGPSTextAlignment->GetInt();
+    if(newAlign >= 0 && newAlign < 3)
+    {
+        g_nTextAlignment = (eFontAlignment)newAlign;
+    }
+}
+
+inline void PreSetup2DVertexNearClip(RwOpenGLVertex &vertex, float nearClip)
+{
+    vertex.pos.z = nearClip;
+}
+
+inline void PreSetup2DVertexRecipClip(RwOpenGLVertex &vertex, float recipClip)
+{
+    vertex.rhw = recipClip;
 }
 
 inline void Setup2DVertex(RwOpenGLVertex &vertex, float x, float y, RwUInt32 color)
 {
     vertex.pos.x = x;
     vertex.pos.y = y;
-    vertex.pos.z = *NearScreenZ + 0.0001f;
-    vertex.rhw = *RecipNearClip;
     vertex.color = color;
 }
 
@@ -283,6 +300,7 @@ unsigned short* textGxt = new unsigned short[0xFF];
 DECL_HOOK(void, PreRenderEnd, void* self)
 {
     PreRenderEnd(self);
+
     if(gpsDistance > 0.0f && !IsGamePaused() && IsRadarVisible())
     {
         static bool bInit = false;
@@ -294,23 +312,29 @@ DECL_HOOK(void, PreRenderEnd, void* self)
 
         if(pCfgGPSDrawDistance->GetBool())
         {
-            if(!bImperialUnits)
+            if(gpsDistance == 100000.0f)
             {
-                if(gpsDistance == 100000.0f) sprintf(text, "Far from the road!");
-                else if (gpsDistance >= 1000.0f) sprintf(text, "%.2fkm", 0.001f * gpsDistance);
-                else sprintf(text, "%dm", (int)gpsDistance);
+                if(bDisableFarFromRoadText) return;
+                sprintf(text, "Far from the road!");
             }
             else
             {
-                if(gpsDistance == 100000.0f) sprintf(text, "Far from the road!");
-                else if (gpsDistance > 1609.344f) sprintf(text, "%.2fmil", (float)(0.000621371192237334 * (double)gpsDistance));
-                else sprintf(text, "%dyrd", (int)(gpsDistance * 1.094f));
+                if(!bImperialUnits)
+                {
+                    if (gpsDistance >= 1000.0f) sprintf(text, "%.2fkm", 0.001f * gpsDistance);
+                    else sprintf(text, "%dm", (int)gpsDistance);
+                }
+                else
+                {
+                    if (gpsDistance > 1609.344f) sprintf(text, "%.2fmil", (float)(0.000621371192237334 * (double)gpsDistance));
+                    else sprintf(text, "%dyrd", (int)(gpsDistance * 1.094f));
+                }
             }
             AsciiToGxtChar(text, textGxt);
 
             static CRGBA drawingColor;
-            drawingColor = (!TargetBlip.m_nHandleIndex && pTrace) ? GetTraceTextColor(pTrace->m_nColour, pTrace->m_bFriendly) : rgbaWhite;
-            //drawingColor.a = GetRadarVisibility();
+            drawingColor = (!TargetBlip.m_nHandleIndex && pRedMarkerBlip) ? GetTraceTextColor(pRedMarkerBlip->m_nColour, pRedMarkerBlip->m_bFriendly) : rgbaWhite;
+            if(!IsGamePaused()) drawingColor.a = GetRadarVisibility();
 
             FontSetOrientation(g_nTextAlignment);
             FontSetColor(&drawingColor);
@@ -342,14 +366,19 @@ void DoPathDraw(CVector to, RwUInt32 color, bool isTargetBlip = false, float* di
     
     bool isGamePaused = IsGamePaused(), bScissors = (!isGamePaused || !gMobileMenu->m_bDrawMenuMap);
     
-    //*ExtraPathsNeeded = true;
-    //*ExtraPathPos = to;
-    DoPathSearch(ThePaths, LaneDirectionRespected() && player->m_pVehicle->m_nVehicleSubType != VEHICLE_TYPE_BOAT, player->GetPosition(), 
+    CVector& playerPos = player->GetPosition();
+    DoPathSearch(ThePaths, LaneDirectionRespected() && player->m_pVehicle->m_nVehicleSubType != VEHICLE_TYPE_BOAT, playerPos, 
                  CNodeAddress(), to, resultNodes, &nodesCount, maxLoadedPathNodes, dist ? dist : &trashVar, 1000000.0f, NULL, 1000000.0f, false,
                  CNodeAddress(), false, player->m_pVehicle->m_nVehicleSubType == VEHICLE_TYPE_BOAT && IsBoatNaviAllowed());
 
     if(nodesCount > 0)
     {
+        if(dist)
+        {
+            CPathNode* node = &ThePaths->pNodes[resultNodes[0].m_nAreaId][resultNodes[0].m_nNodeId];
+            *dist += (node->GetPosition() - playerPos).Magnitude();
+        }
+
         if(isTargetBlip && bScissors &&
            gpsDistance < pCfgClosestMaxGPSDistance->GetFloat())
         {
@@ -386,6 +415,25 @@ void DoPathDraw(CVector to, RwUInt32 color, bool isTargetBlip = false, float* di
 
         if(IsRadarVisible() || isGamePaused)
         {
+            if(*NearScreenZ != NearScreenZ_Cache)
+            {
+                NearScreenZ_Cache = *NearScreenZ;
+                float nearScreen = NearScreenZ_Cache + 0.0001f;
+                for(int i = 0; i < MAX_NODE_POINTS; ++i)
+                {
+                    PreSetup2DVertexNearClip(lineVerts[i], nearScreen);
+                }
+            }
+            if(*RecipNearClip != RecipNearClip_Cache)
+            {
+                RecipNearClip_Cache = *RecipNearClip;
+                float recipClip = RecipNearClip_Cache;
+                for(int i = 0; i < MAX_NODE_POINTS; ++i)
+                {
+                    PreSetup2DVertexRecipClip(lineVerts[i], recipClip);
+                }
+            }
+
             if (bScissors) SetScissorRect(radarRect); // Scissors
             RwRenderStateSet(rwRENDERSTATETEXTURERASTER, NULL);
 
@@ -397,9 +445,7 @@ void DoPathDraw(CVector to, RwUInt32 color, bool isTargetBlip = false, float* di
             if (isGamePaused)
             {
                 float mp = gMobileMenu->m_fMapZoom - 140.0f;
-                if (mp < 140.0f) mp = 140.0f;
-                else if (mp > 960.0f) mp = 960.0f;
-                mp = mp / 960.0f + 0.4f;
+                mp = clampint(140.0f, 960.0f, mp) / 960.0f + 0.4f;
                 mp *= lineWidth;
 
                 for (int i = 0; i < nodesCount; i++)
@@ -466,7 +512,7 @@ DECL_HOOKv(PostRadarDraw, bool b)
         TargetBlip.m_nHandleIndex = 0;
     }
         
-    pTrace = NULL;
+    pRedMarkerBlip = NULL;
     if(bAllowMission && IsOnAMission())
     {
         CPlayerPed* player = FindPlayerPed(-1);
@@ -482,7 +528,7 @@ DECL_HOOKv(PostRadarDraw, bool b)
             {
                 if(trace.m_nColour == BLIP_COLOUR_DESTINATION)
                 {
-                    pTrace = &trace;
+                    pRedMarkerBlip = &trace;
                     break;
                 }
                 traces[count] = &trace;
@@ -502,39 +548,39 @@ DECL_HOOKv(PostRadarDraw, bool b)
                     maxdist = distances[i];
                 }
             }
-            pTrace = traces[maxi];
+            pRedMarkerBlip = traces[maxi];
         }
                 
-        if(pTrace)
+        if(pRedMarkerBlip)
         {
             CEntity *handle;
-            switch(pTrace->m_nBlipType)
+            switch(pRedMarkerBlip->m_nBlipType)
             {
                 case BLIP_CAR:
-                    if((handle = GetPoolVeh(pTrace->m_nEntityHandle)) != NULL)
-                        DoPathDraw(handle->GetPosition(), GetTraceColor(pTrace->m_nColour, pTrace->m_bFriendly), false, !TargetBlip.m_nHandleIndex ? &gpsDistance : NULL);
+                    if((handle = GetPoolVeh(pRedMarkerBlip->m_nEntityHandle)) != NULL)
+                        DoPathDraw(handle->GetPosition(), GetTraceColor(pRedMarkerBlip->m_nColour, pRedMarkerBlip->m_bFriendly), false, !TargetBlip.m_nHandleIndex ? &gpsDistance : NULL);
                     break;
                         
                 case BLIP_CHAR:
-                    if((handle = GetPoolPed(pTrace->m_nEntityHandle)) != NULL)
-                        DoPathDraw(handle->GetPosition(), GetTraceColor(pTrace->m_nColour, pTrace->m_bFriendly), false, !TargetBlip.m_nHandleIndex ? &gpsDistance : NULL);
+                    if((handle = GetPoolPed(pRedMarkerBlip->m_nEntityHandle)) != NULL)
+                        DoPathDraw(handle->GetPosition(), GetTraceColor(pRedMarkerBlip->m_nColour, pRedMarkerBlip->m_bFriendly), false, !TargetBlip.m_nHandleIndex ? &gpsDistance : NULL);
                     break;
                         
                 case BLIP_OBJECT:
-                    if((handle = GetPoolObj(pTrace->m_nEntityHandle)) != NULL)
-                        DoPathDraw(handle->GetPosition(), GetTraceColor(pTrace->m_nColour, pTrace->m_bFriendly), false, !TargetBlip.m_nHandleIndex ? &gpsDistance : NULL);
+                    if((handle = GetPoolObj(pRedMarkerBlip->m_nEntityHandle)) != NULL)
+                        DoPathDraw(handle->GetPosition(), GetTraceColor(pRedMarkerBlip->m_nColour, pRedMarkerBlip->m_bFriendly), false, !TargetBlip.m_nHandleIndex ? &gpsDistance : NULL);
                     break;
                     
                 case BLIP_PICKUP:
                 {
-                    CPickup* p = &aPickUps[pTrace->m_ScriptHandle.m_nId];
-                    DoPathDraw(UncompressLargeVector(p->m_vecPos), GetTraceColor(pTrace->m_nColour, pTrace->m_bFriendly), false, !TargetBlip.m_nHandleIndex ? &gpsDistance : NULL);
+                    CPickup* p = &aPickUps[pRedMarkerBlip->m_ScriptHandle.m_nId];
+                    DoPathDraw(UncompressLargeVector(p->m_vecPos), GetTraceColor(pRedMarkerBlip->m_nColour, pRedMarkerBlip->m_bFriendly), false, !TargetBlip.m_nHandleIndex ? &gpsDistance : NULL);
                     break;
                 }
                         
                 case BLIP_COORD:
                 case BLIP_CONTACT_POINT:
-                    DoPathDraw(pTrace->m_vecWorldPosition, GetTraceColor(pTrace->m_nColour, pTrace->m_bFriendly), false, !TargetBlip.m_nHandleIndex ? &gpsDistance : NULL);
+                    DoPathDraw(pRedMarkerBlip->m_vecWorldPosition, GetTraceColor(pRedMarkerBlip->m_nColour, pRedMarkerBlip->m_bFriendly), false, !TargetBlip.m_nHandleIndex ? &gpsDistance : NULL);
                     break;
                     
                 default:
@@ -564,15 +610,14 @@ DECL_HOOKv(LoadSceneForPathNodes, CPathFind* self, CVector center)
     }
 }
 
+static CVector mapcorner1 = { -3000.0f, -3000.0f, 20.0f };
+static CVector mapcorner2 = { -3000.0f,  3000.0f, 20.0f };
+static CVector mapcorner3 = {  3000.0f, -3000.0f, 20.0f };
+static CVector mapcorner4 = {  3000.0f,  3000.0f, 20.0f };
 DECL_HOOKv(UpdateStreaming, CPathFind *self, bool forceLoad)
 {
     if(!forceLoad && !*ExtraPathsNeeded && (*m_snTimeInMilliseconds ^ *m_snPreviousTimeInMilliseconds) < 512) return;
     memset(ToBeStreamed, 0, 64);
-
-    static CVector mapcorner1 = { -3000.0f, -3000.0f, 20.0f };
-    static CVector mapcorner2 = { -3000.0f, 3000.0f, 20.0f };
-    static CVector mapcorner3 = {  3000.0f, -3000.0f, 20.0f };
-    static CVector mapcorner4 = {  3000.0f,  3000.0f, 20.0f };
 
     MarkRegionsForCoors(self, mapcorner1, 4300.0f);
     MarkRegionsForCoors(self, mapcorner2, 4300.0f);
@@ -608,7 +653,7 @@ __attribute__((optnone)) __attribute__((naked)) void DoPathFind_Inject(void)
 }
 #endif
 
-extern "C" void OnModLoad()
+ON_MOD_LOAD()
 {
     logger->SetTag("GPS AML");
     pGTASA = aml->GetLib("libGTASA.so");
@@ -628,11 +673,13 @@ extern "C" void OnModLoad()
     pCfgGPSDrawDistancePosition = cfg->Bind("GPSDrawDistancePos", 0); // 0 under, 1 above, 2 left, 3 right, 4 custom
     pCfgGPSDrawDistanceTextScale = cfg->Bind("GPSDrawDistanceTextScale", 1.0f);
     pCfgGPSDrawDistanceTextOffset = cfg->Bind("GPSDrawDistanceTextOffset", "0.0 0.0");
+    pCfgGPSTextAlignment = cfg->Bind("GPSTextAlignment", "-1");
     bAllowBMX = cfg->GetBool("AllowBMX", false);
     bAllowBoat = cfg->GetBool("AllowBoatNavi", true);
     bAllowMission = cfg->GetBool("MissionRoutes", true);
     bImperialUnits = cfg->GetBool("UseImperialUnits", false); // People need this. https://github.com/juicermv/GTA-GPS-Redux/issues/13
     bRespectLanesDirection = cfg->GetBool("RespectLanesDirection", false);
+    bDisableFarFromRoadText = cfg->GetBool("DisableFarFromRoadText", false);
     
     int r, g, b, a, sscanfed = sscanf(pCfgGPSLineColorRGB->GetString(), "%d %d %d %d", &r, &g, &b, &a);
     if(sscanfed == 4 && IsRGBValue(r) && IsRGBValue(g) && IsRGBValue(b) && IsRGBValue(a))
