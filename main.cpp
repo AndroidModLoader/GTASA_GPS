@@ -297,9 +297,9 @@ inline bool IsBoatNaviAllowed()
 
 char text[24];
 unsigned short* textGxt = new unsigned short[0xFF];
-DECL_HOOK(void, PreRenderEnd, void* self)
+DECL_HOOK(void, PreRenderEnd)
 {
-    PreRenderEnd(self);
+    PreRenderEnd();
 
     if(gpsDistance > 0.0f && !IsGamePaused() && IsRadarVisible())
     {
@@ -709,7 +709,7 @@ ON_MOD_LOAD()
 
     // Hooks
 
-    HOOKPLT(PreRenderEnd,                       pGTASA + BYBIT(0x674188, 0x846E90));
+    HOOKPLT(PreRenderEnd,                       pGTASA + BYBIT(0x6737EC, 0x845EC8));
     HOOKPLT(InitRenderWare,                     pGTASA + BYBIT(0x66F2D0, 0x8432F0));
     HOOK(PostRadarDraw,                         aml->GetSym(hGTASA, "_ZN6CRadar20DrawRadarGangOverlayEb"));
     HOOKBLX(LoadSceneForPathNodes,              pGTASA + BYBIT(0x2D4AFE + 0x1, 0x3970DC));
